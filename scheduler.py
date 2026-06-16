@@ -2,50 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Any
 
 import asyncio
 import logging
 
 from .config import ApiConfig, Daily60sPluginConfig
 from .fetcher import API_REGISTRY, Fetcher
+from .sender import OneBotSender
 
 LOGGER = logging.getLogger("daily60s.scheduler")
 
 # 调度循环检查间隔（秒）
 _CHECK_INTERVAL_SEC = 60
 
-SendFn = Callable[[str, str], Coroutine[Any, Any, None]]
-"""签名：async def send_fn(content: str, stream_id: str) -> None"""
-
-SendImageFn = Callable[[str, str], Coroutine[Any, Any, None]]
-"""签名：async def send_image_fn(image_b64: str, stream_id: str) -> None"""
-
 
 class Scheduler:
     """每日定时推送调度器。
 
     每个 API 独立配置推送时间和目标群聊，调度器统一在后台循环中检查。
+    推送目标通过 QQ 群号 / 私聊 QQ 号配置，直接通过 OneBotSender 发送。
 
     Args:
         config: 插件完整配置。
         fetcher: 已初始化的数据源拉取器。
-        send_fn: 异步发送函数，签名为 ``async (content, stream_id) -> None``。
+        sender: OneBot HTTP 消息发送器。
     """
 
     def __init__(
         self,
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
-        send_text_fn: SendFn,
-        send_image_fn: SendImageFn,
+        sender: OneBotSender,
     ) -> None:
         self._config = config
         self._fetcher = fetcher
-        self._send_fn = send_text_fn
-        self._send_image_fn = send_image_fn
+        self._sender = sender
         self._task: asyncio.Task[None] | None = None
         # 记录每个 API 当天是否已推送，键为 api_name，值为最后推送日期 YYYY-MM-DD
         self._last_push_date: dict[str, str] = {}
@@ -115,11 +107,13 @@ class Scheduler:
     async def _do_push(self, api: ApiConfig) -> None:
         """执行单个 API 的定时推送。
 
+        遍历 push_groups（群号）和 push_users（私聊 QQ 号），分别调用 OneBotSender 发送。
+
         Args:
             api: 需要推送的 API 配置。
         """
-        if not api.stream_ids:
-            LOGGER.info("API '%s' 的 stream_ids 为空，跳过定时推送", api.name)
+        if not api.push_groups and not api.push_users:
+            LOGGER.info("API '%s' 的 push_groups 和 push_users 均为空，跳过定时推送", api.name)
             return
 
         if api.name not in API_REGISTRY:
@@ -138,15 +132,22 @@ class Scheduler:
             LOGGER.exception("定时推送拉取 API '%s' 失败，跳过", api.name)
             return
 
-        for stream_id in api.stream_ids:
+        # 推送至各个群
+        for group_id in api.push_groups:
             try:
                 if result.is_image:
-                    await self._send_image_fn(result.content, stream_id)
+                    await self._sender.send_group_image(int(group_id), result.content)
                 else:
-                    await self._send_fn(result.content, stream_id)
+                    await self._sender.send_group(int(group_id), result.content)
             except Exception:
-                LOGGER.warning(
-                    "向 stream_id='%s' 推送 API '%s' 失败",
-                    stream_id,
-                    api.name,
-                )
+                LOGGER.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
+
+        # 推送至各个私聊用户
+        for user_id in api.push_users:
+            try:
+                if result.is_image:
+                    await self._sender.send_user_image(int(user_id), result.content)
+                else:
+                    await self._sender.send_user(int(user_id), result.content)
+            except Exception:
+                LOGGER.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)

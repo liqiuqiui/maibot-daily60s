@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from typing import Any, ClassVar, Optional, cast
-
+import json
 import logging
 
-from maibot_sdk import EventHandler, MaiBotPlugin, PluginConfigBase
-from maibot_sdk.types import EventType
+from maibot_sdk import EventHandler, HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.types import EventType, HookMode
 
 from .config import ApiConfig, Daily60sPluginConfig
 from .fetcher import API_REGISTRY, Fetcher
 from .scheduler import Scheduler
-
-LOGGER = logging.getLogger("daily60s.plugin")
+from .sender import OneBotSender
 
 
 class Daily60sPlugin(MaiBotPlugin):
@@ -26,27 +25,28 @@ class Daily60sPlugin(MaiBotPlugin):
         super().__init__()
         self._fetcher: Optional[Fetcher] = None
         self._scheduler: Optional[Scheduler] = None
+        self._sender: Optional[OneBotSender] = None
 
     async def on_load(self) -> None:
-        """加载插件：初始化 Fetcher 和 Scheduler，启动调度循环。"""
+        """加载插件：初始化 Fetcher、OneBotSender 和 Scheduler，启动调度循环。"""
         cfg = cast(Daily60sPluginConfig, self.config)
+        self.ctx.logger.warning("Daily60sPlugin init")
 
         self._fetcher = Fetcher(timeout=cfg.fetch.timeout)
-
-        async def _send_text(content: str, stream_id: str) -> None:
-            await self.ctx.send.text(content, stream_id)
-
-        async def _send_image(content: str, stream_id: str) -> None:
-            await self.ctx.send.image(content, stream_id)
+        self._sender = OneBotSender(
+            host=cfg.message_server.host,
+            port=cfg.message_server.port,
+            token=cfg.message_server.token,
+            timeout=cfg.fetch.timeout,
+        )
 
         self._scheduler = Scheduler(
             config=cfg,
             fetcher=self._fetcher,
-            send_text_fn=_send_text,
-            send_image_fn=_send_image,
+            sender=self._sender,
         )
         self._scheduler.start()
-        LOGGER.info("每日速读插件已加载，共 %d 个 API", len(cfg.apis))
+        self.ctx.logger.info("每日速读插件已加载，共 %d 个 API", len(cfg.apis))
 
     async def on_unload(self) -> None:
         """卸载插件：停止调度循环并清理运行时组件。"""
@@ -54,7 +54,8 @@ class Daily60sPlugin(MaiBotPlugin):
             await self._scheduler.stop()
             self._scheduler = None
         self._fetcher = None
-        LOGGER.info("每日速读插件已卸载")
+        self._sender = None
+        self.ctx.logger.info("每日速读插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
         """配置更新后重载运行时组件。
@@ -69,49 +70,64 @@ class Daily60sPlugin(MaiBotPlugin):
 
         self.set_plugin_config(config_data)
         if version:
-            LOGGER.debug("每日速读插件收到配置更新通知：%s", version)
+            self.ctx.logger.debug("每日速读插件收到配置更新通知：%s", version)
 
         # 重建 Fetcher 和 Scheduler 以使新配置生效
         await self.on_unload()
         await self.on_load()
 
     @EventHandler(
-        "daily60s_message_handler",
-        description="关键词触发 API 查询",
-        event_type=EventType.ON_MESSAGE,
+        "on_startup",
+        description="插件启动时初始化资源",
+        event_type=EventType.ON_START,
     )
-    async def handle_message(
-        self,
-        message: Any = None,
-        stream_id: str = "",
-        **kwargs: Any,
-    ) -> tuple:
+    async def handle_startup(self, **kwargs):
+        self.ctx.logger.info("启动事件触发，开始初始化")
+        # 在这里执行启动时需要的初始化逻辑
+
+    @HookHandler(
+        hook="chat.receive.before_process",
+        name="daily60s_message_handler",
+        description="关键词触发 API 查询",
+        mode=HookMode.BLOCKING,
+    )
+    async def handle_message(self, **kwargs: Any):
         """监听消息，匹配任意 API 的关键词后拉取并回复内容。
 
         匹配规则：消息按空格分割，第一个 token 与关键词精确比对（大小写不敏感），
         后续 token 依序对应该 API 在 API_REGISTRY 中定义的 param_names。
 
         Args:
-            message: 消息对象，包含 plain_text 等字段。
-            stream_id: 消息来源的聊天流 ID。
-            **kwargs: 预留扩展参数。
+            **kwargs: SessionMessage消息参数
 
         Returns:
-            tuple: SDK 规定的标准返回格式。
         """
-        del kwargs
 
+        message = kwargs.get("message")
+        if message is None:
+            return None
+        self.ctx.logger.info(f"接受消息:\n {json.dumps(obj=message, indent=2, ensure_ascii=False)}")
         cfg = cast(Daily60sPluginConfig, self.config)
-        if not cfg.plugin.enabled:
-            return True, True, None, None, None
 
-        if not message or not stream_id:
-            return True, True, None, None, None
+        if not message.get("is_command") or not cfg.plugin.enabled:
+            return None
+
+        # 根据消息类型取发送目标 ID
+        msg_type = message.get("message_info", {}).get("message_type", "group")
+        group_info = message.get("message_info", {}).get("group_info") or {}
+        user_info = message.get("message_info", {}).get("user_info") or {}
+        group_id: str = group_info.get("group_id", "")
+        user_id: str = user_info.get("user_id", "")
+
+        if msg_type == "group" and not group_id:
+            return None
+        if msg_type == "private" and not user_id:
+            return None
 
         raw = message.get("plain_text", "") if isinstance(message, dict) else str(message)
         parts = raw.strip().split()
         if not parts:
-            return True, True, None, None, None
+            return None
 
         command_token = parts[0].lower()
 
@@ -128,17 +144,17 @@ class Daily60sPlugin(MaiBotPlugin):
                 break
 
         if matched_api is None:
-            return True, True, None, None, None
+            return None
 
-        if self._fetcher is None:
-            LOGGER.error("Fetcher 尚未初始化，无法处理关键词触发请求")
-            return True, True, None, None, None
+        if self._fetcher is None or self._sender is None:
+            self.ctx.logger.error("插件尚未初始化，无法处理关键词触发请求")
+            return None
 
         # 从 API_REGISTRY 取参数名定义，按位置从消息 token 中提取参数值
         definition = API_REGISTRY.get(matched_api.name)
         if definition is None:
-            LOGGER.error("API '%s' 不在 API_REGISTRY 中", matched_api.name)
-            return True, True, None, None, None
+            self.ctx.logger.error("API '%s' 不在 API_REGISTRY 中", matched_api.name)
+            return None
 
         params: dict[str, str] = {}
         arg_tokens = parts[1:]
@@ -148,8 +164,11 @@ class Daily60sPlugin(MaiBotPlugin):
             else:
                 # 必填参数缺失，回复用法提示
                 usage = f"用法：{parts[0]} " + " ".join(f"<{n}>" for n in definition.param_names)
-                await self.ctx.send.text(usage, stream_id)
-                return True, True, None, None, None
+                if msg_type == "private":
+                    await self._sender.send_user(int(user_id), usage)
+                else:
+                    await self._sender.send_group(int(group_id), usage)
+                return None
 
         push_format = getattr(matched_api, "push_format", "text")
         try:
@@ -159,15 +178,24 @@ class Daily60sPlugin(MaiBotPlugin):
                 params=params or None,
                 push_format=push_format,
             )
-            if result.is_image:
-                await self.ctx.send.image(result.content, stream_id)
+            if msg_type == "private":
+                if result.is_image:
+                    await self._sender.send_user_image(int(user_id), result.content)
+                else:
+                    await self._sender.send_user(int(user_id), result.content)
             else:
-                await self.ctx.send.text(result.content, stream_id)
+                if result.is_image:
+                    await self._sender.send_group_image(int(group_id), result.content)
+                else:
+                    await self._sender.send_group(int(group_id), result.content)
         except Exception:
-            LOGGER.exception("拉取 API '%s' 失败", matched_api.name)
-            await self.ctx.send.text("内容获取失败，请稍后重试", stream_id)
+            self.ctx.logger.exception("拉取 API '%s' 失败", matched_api.name)
+            if msg_type == "private":
+                await self._sender.send_user(int(user_id), "内容获取失败，请稍后重试")
+            else:
+                await self._sender.send_group(int(group_id), "内容获取失败，请稍后重试")
 
-        return True, True, None, None, None
+        return None
 
 
 def create_plugin() -> Daily60sPlugin:

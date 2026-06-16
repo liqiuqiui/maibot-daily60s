@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any, ClassVar, List
+from typing import Any, ClassVar, List, Literal
 
 import logging
+import re
 
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator
@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("daily60s.config")
 
 _PUSH_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
-SUPPORTED_CONFIG_VERSION = "1.2.0"
+SUPPORTED_CONFIG_VERSION = "1.3.0"
 
 
 def _normalize_string(value: Any) -> str:
@@ -103,14 +103,25 @@ class ApiConfig(PluginConfigBase):
             "placeholder": "08:00",
         },
     )
-    stream_ids: List[str] = Field(
+    push_groups: List[str] = Field(
         default_factory=list,
-        description="定时推送的目标 stream_id 列表，支持多个群组。",
+        description="定时推送的目标 QQ 群号列表，支持多个群组。",
         json_schema_extra={
-            "hint": "填写多个 stream_id 可同时推送到多个群组，留空则不实际发送。",
-            "label": "推送目标群组",
+            "hint": "填写 QQ 号即可，例如 123456789。推送时会自动解析群号对应的聊天流。",
+            "label": "推送目标群号",
             "order": 4,
-            "placeholder": "请输入 stream_id",
+            "placeholder": "例如：123456789",
+        },
+    )
+
+    push_users: List[str] = Field(
+        default_factory=list,
+        description="定时推送的目标私聊 QQ 号列表。",
+        json_schema_extra={
+            "hint": "填写 QQ 号即可，例如 123456789。",
+            "label": "推送目标私聊 QQ 号",
+            "order": 5,
+            "placeholder": "例如：123456789",
         },
     )
 
@@ -129,9 +140,14 @@ class ApiConfig(PluginConfigBase):
             LOGGER.warning("部分关键词不以 / 开头，已自动过滤：%s", [k for k in raw if not k.startswith("/")])
         return valid
 
-    @field_validator("stream_ids", mode="before")
+    @field_validator("push_groups", mode="before")
     @classmethod
-    def _normalize_stream_ids(cls, value: Any) -> List[str]:
+    def _normalize_push_groups(cls, value: Any) -> List[str]:
+        return _normalize_string_list(value)
+
+    @field_validator("push_users", mode="before")
+    @classmethod
+    def _normalize_push_users(cls, value: Any) -> List[str]:
         return _normalize_string_list(value)
 
     @field_validator("push_time", mode="before")
@@ -166,14 +182,13 @@ class DailyNewsApiConfig(ApiConfig):
         description="是否启用每日定时推送。",
         json_schema_extra={"label": "定时推送", "order": 2},
     )
-    push_format: str = Field(
+    push_format: Literal["text", "image"] = Field(
         default="text",
         description="推送格式：text（文字新闻列表）或 image（每日封面图片）。",
         json_schema_extra={
             "hint": "选择 image 时推送每日封面图，选择 text 时推送文字新闻列表。",
             "label": "推送格式",
-            "order": 5,
-            "enum": ["text", "image"],
+            "order": 6,
         },
     )
 
@@ -299,6 +314,59 @@ class FetchConfig(PluginConfigBase):
         return _normalize_string_list(value)
 
 
+class MessageServerConfig(PluginConfigBase):
+    """OneBot HTTP 消息服务器配置。"""
+
+    __ui_label__: ClassVar[str] = "消息服务器"
+    __ui_icon__: ClassVar[str] = "server"
+    __ui_order__: ClassVar[int] = 5
+
+    host: str = Field(
+        default="http://127.0.0.1",
+        description="OneBot HTTP 服务地址，含协议前缀，例如 http://127.0.0.1。",
+        json_schema_extra={
+            "hint": "必须包含协议前缀，如 http:// 或 https://。",
+            "label": "服务地址",
+            "order": 0,
+            "placeholder": "http://127.0.0.1",
+        },
+    )
+    port: int = Field(
+        default=5700,
+        description="OneBot HTTP 服务端口。",
+        json_schema_extra={
+            "label": "端口",
+            "order": 1,
+            "step": 1,
+        },
+    )
+    token: str = Field(
+        default="",
+        description="access token，为空时不附加鉴权参数。",
+        json_schema_extra={
+            "hint": "对应 OneBot 配置中的 access_token，为空时不鉴权。",
+            "label": "Token",
+            "order": 2,
+            "placeholder": "留空表示不鉴权",
+        },
+    )
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def _normalize_host(cls, value: Any) -> str:
+        return _normalize_string(value) or "http://127.0.0.1"
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def _normalize_port(cls, value: Any) -> int:
+        return _normalize_positive_int(value, 5700)
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def _normalize_token(cls, value: Any) -> str:
+        return _normalize_string(value)
+
+
 class Daily60sPluginConfig(PluginConfigBase):
     """每日速读插件完整配置。"""
 
@@ -307,6 +375,7 @@ class Daily60sPluginConfig(PluginConfigBase):
     daily_news: DailyNewsApiConfig = Field(default_factory=DailyNewsApiConfig)
     gold_price: GoldPriceApiConfig = Field(default_factory=GoldPriceApiConfig)
     gas_price: GasPriceApiConfig = Field(default_factory=GasPriceApiConfig)
+    message_server: MessageServerConfig = Field(default_factory=MessageServerConfig)
 
     @property
     def apis(self) -> List[ApiConfig]:

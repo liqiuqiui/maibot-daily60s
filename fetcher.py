@@ -212,11 +212,11 @@ class Fetcher:
     def _format_gold_price(self, data: Any) -> FetchResult:
         """格式化 /v2/gold-price 黄金价格响应。"""
         if not isinstance(data, dict):
-            return str(data)
+            return FetchResult(content=str(data))
 
         inner = data.get("data", {})
         if not isinstance(inner, dict):
-            return str(data)
+            return FetchResult(content=str(data))
 
         date: str = inner.get("date", "")
         metals: list[Any] = inner.get("metals", [])
