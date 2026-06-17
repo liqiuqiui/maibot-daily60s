@@ -156,96 +156,6 @@ class ApiConfig(PluginConfigBase):
         return _normalize_push_time_value(value)
 
 
-class DailyNewsApiConfig(ApiConfig):
-    """每日60秒 API 配置（路径：/v2/60s，无参数）。"""
-
-    __ui_label__: ClassVar[str] = "每日60秒"
-    __ui_icon__: ClassVar[str] = "newspaper"
-    __ui_order__: ClassVar[int] = 2
-
-    name: str = Field(
-        default="daily_news",
-        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
-    )
-    keywords: List[str] = Field(
-        default_factory=lambda: ["/60s", "/daily60s"],
-        description="触发关键词列表，必须以 / 开头。",
-        json_schema_extra={
-            "hint": "所有关键词必须以 / 开头，大小写不敏感。",
-            "label": "触发关键词",
-            "order": 1,
-            "placeholder": "例如：/60s",
-        },
-    )
-    schedule_push: bool = Field(
-        default=True,
-        description="是否启用每日定时推送。",
-        json_schema_extra={"label": "定时推送", "order": 2},
-    )
-    push_format: Literal["text", "image"] = Field(
-        default="text",
-        description="推送格式：text（文字新闻列表）或 image（每日封面图片）。",
-        json_schema_extra={
-            "hint": "选择 image 时推送每日封面图，选择 text 时推送文字新闻列表。",
-            "label": "推送格式",
-            "order": 6,
-        },
-    )
-
-    @field_validator("push_format", mode="before")
-    @classmethod
-    def _normalize_push_format(cls, value: Any) -> str:
-        """规范化推送格式字段，非法值回退到 text。"""
-        normalized = _normalize_string(value).lower()
-        return normalized if normalized in ("text", "image") else "text"
-
-
-class GoldPriceApiConfig(ApiConfig):
-    """黄金价格 API 配置（路径：/v2/gold-price，无参数）。"""
-
-    __ui_label__: ClassVar[str] = "黄金价格"
-    __ui_icon__: ClassVar[str] = "coins"
-    __ui_order__: ClassVar[int] = 3
-
-    name: str = Field(
-        default="gold_price",
-        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
-    )
-    keywords: List[str] = Field(
-        default_factory=lambda: ["/gold_price"],
-        description="触发关键词列表，必须以 / 开头。",
-        json_schema_extra={
-            "hint": "所有关键词必须以 / 开头，大小写不敏感。",
-            "label": "触发关键词",
-            "order": 1,
-            "placeholder": "例如：/gold_price",
-        },
-    )
-
-
-class GasPriceApiConfig(ApiConfig):
-    """汽油价格 API 配置（路径：/v2/gas-price，参数：city=<城市名>）。"""
-
-    __ui_label__: ClassVar[str] = "汽油价格"
-    __ui_icon__: ClassVar[str] = "fuel"
-    __ui_order__: ClassVar[int] = 4
-
-    name: str = Field(
-        default="gas_price",
-        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
-    )
-    keywords: List[str] = Field(
-        default_factory=lambda: ["/gas_price"],
-        description="触发关键词列表，必须以 / 开头。用法：/gas_price <城市名>",
-        json_schema_extra={
-            "hint": "发送命令时在关键词后加城市名，例如：/gas_price 北京",
-            "label": "触发关键词",
-            "order": 1,
-            "placeholder": "例如：/gas_price",
-        },
-    )
-
-
 class PluginSectionConfig(PluginConfigBase):
     """插件基础配置。"""
 
@@ -275,51 +185,12 @@ class PluginSectionConfig(PluginConfigBase):
         return normalized_value or SUPPORTED_CONFIG_VERSION
 
 
-class FetchConfig(PluginConfigBase):
-    """数据源拉取配置。"""
-
-    __ui_label__: ClassVar[str] = "数据源"
-    __ui_icon__: ClassVar[str] = "globe"
-    __ui_order__: ClassVar[int] = 1
-
-    timeout: int = Field(
-        default=10,
-        description="HTTP 请求超时秒数。",
-        json_schema_extra={
-            "hint": "超过该时长未收到响应时视为请求失败，自动切换下一个 base_url。",
-            "label": "超时秒数",
-            "order": 0,
-            "step": 1,
-        },
-    )
-    base_urls: List[str] = Field(
-        default_factory=lambda: ["https://60s.viki.moe"],
-        description="API 根地址列表，按顺序尝试，前一个失败时自动切换到下一个。",
-        json_schema_extra={
-            "hint": "填写多个地址可实现冗余回退，例如自建实例与官方实例并列。",
-            "label": "数据源地址列表",
-            "order": 1,
-            "placeholder": "https://60s.viki.moe",
-        },
-    )
-
-    @field_validator("timeout", mode="before")
-    @classmethod
-    def _normalize_timeout(cls, value: Any) -> int:
-        return _normalize_positive_int(value, 10)
-
-    @field_validator("base_urls", mode="before")
-    @classmethod
-    def _normalize_base_urls(cls, value: Any) -> List[str]:
-        return _normalize_string_list(value)
-
-
 class MessageServerConfig(PluginConfigBase):
     """OneBot HTTP 消息服务器配置。"""
 
     __ui_label__: ClassVar[str] = "消息服务器"
     __ui_icon__: ClassVar[str] = "server"
-    __ui_order__: ClassVar[int] = 5
+    __ui_order__: ClassVar[int] = 1
 
     host: str = Field(
         default="http://127.0.0.1",
@@ -367,15 +238,145 @@ class MessageServerConfig(PluginConfigBase):
         return _normalize_string(value)
 
 
+class FetchConfig(PluginConfigBase):
+    """数据源拉取配置。"""
+
+    __ui_label__: ClassVar[str] = "数据源"
+    __ui_icon__: ClassVar[str] = "globe"
+    __ui_order__: ClassVar[int] = 2
+
+    base_urls: List[str] = Field(
+        default_factory=lambda: ["https://60s.viki.moe"],
+        description="API 根地址列表，按顺序尝试，前一个失败时自动切换到下一个。",
+        json_schema_extra={
+            "hint": "填写多个地址可实现冗余回退，例如自建实例与官方实例并列。",
+            "label": "数据源地址列表",
+            "order": 9,
+            "placeholder": "https://60s.viki.moe",
+        },
+    )
+
+    timeout: int = Field(
+        default=10,
+        description="HTTP 请求超时秒数。",
+        json_schema_extra={
+            "hint": "超过该时长未收到响应时视为请求失败，自动切换下一个 base_url。",
+            "label": "超时秒数",
+            "order": 1,
+            "step": 1,
+        },
+    )
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _normalize_timeout(cls, value: Any) -> int:
+        return _normalize_positive_int(value, 10)
+
+    @field_validator("base_urls", mode="before")
+    @classmethod
+    def _normalize_base_urls(cls, value: Any) -> List[str]:
+        return _normalize_string_list(value)
+
+
+class DailyNewsApiConfig(ApiConfig):
+    """每日60秒 API 配置（路径：/v2/60s，无参数）。"""
+
+    __ui_label__: ClassVar[str] = "每日60秒"
+    __ui_icon__: ClassVar[str] = "newspaper"
+    __ui_order__: ClassVar[int] = 3
+
+    name: str = Field(
+        default="daily_news",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/60s", "/daily60s"],
+        description="触发关键词列表，必须以 / 开头。",
+        json_schema_extra={
+            "hint": "所有关键词必须以 / 开头，大小写不敏感。",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/60s",
+        },
+    )
+    schedule_push: bool = Field(
+        default=True,
+        description="是否启用每日定时推送。",
+        json_schema_extra={"label": "定时推送", "order": 2},
+    )
+    push_format: Literal["text", "image"] = Field(
+        default="text",
+        description="推送格式：text（文字新闻列表）或 image（每日封面图片）。",
+        json_schema_extra={
+            "hint": "选择 image 时推送每日封面图，选择 text 时推送文字新闻列表。",
+            "label": "推送格式",
+            "order": 6,
+        },
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        """规范化推送格式字段，非法值回退到 text。"""
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "text"
+
+
+class GoldPriceApiConfig(ApiConfig):
+    """黄金价格 API 配置（路径：/v2/gold-price，无参数）。"""
+
+    __ui_label__: ClassVar[str] = "黄金价格"
+    __ui_icon__: ClassVar[str] = "coins"
+    __ui_order__: ClassVar[int] = 4
+
+    name: str = Field(
+        default="gold_price",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/gold_price"],
+        description="触发关键词列表，必须以 / 开头。",
+        json_schema_extra={
+            "hint": "所有关键词必须以 / 开头，大小写不敏感。",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/gold_price",
+        },
+    )
+
+
+class GasPriceApiConfig(ApiConfig):
+    """汽油价格 API 配置（路径：/v2/gas-price，参数：city=<城市名>）。"""
+
+    __ui_label__: ClassVar[str] = "汽油价格"
+    __ui_icon__: ClassVar[str] = "fuel"
+    __ui_order__: ClassVar[int] = 5
+
+    name: str = Field(
+        default="gas_price",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/gas_price"],
+        description="触发关键词列表，必须以 / 开头。用法：/gas_price <城市名>",
+        json_schema_extra={
+            "hint": "发送命令时在关键词后加城市名，例如：/gas_price 北京",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/gas_price",
+        },
+    )
+
+
 class Daily60sPluginConfig(PluginConfigBase):
     """每日速读插件完整配置。"""
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+    message_server: MessageServerConfig = Field(default_factory=MessageServerConfig)
     fetch: FetchConfig = Field(default_factory=FetchConfig)
     daily_news: DailyNewsApiConfig = Field(default_factory=DailyNewsApiConfig)
     gold_price: GoldPriceApiConfig = Field(default_factory=GoldPriceApiConfig)
     gas_price: GasPriceApiConfig = Field(default_factory=GasPriceApiConfig)
-    message_server: MessageServerConfig = Field(default_factory=MessageServerConfig)
 
     @property
     def apis(self) -> List[ApiConfig]:

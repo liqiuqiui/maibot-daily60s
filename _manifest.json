@@ -5,14 +5,14 @@
   "description": "每日定时推送新闻速读等内容，支持多数据源和关键词触发",
   "author": {
     "name": "liqiuqiu",
-    "url": "https://github.com/MaiM-with-u"
+    "url": "https://github.com/liqiuqiui/maibot-daily60s"
   },
   "license": "GPL-v3.0-or-later",
   "urls": {
-    "repository": "https://github.com/MaiM-with-u/maibot",
-    "homepage": "https://github.com/MaiM-with-u/maibot",
-    "documentation": "https://github.com/MaiM-with-u/maibot",
-    "issues": "https://github.com/MaiM-with-u/maibot/issues"
+    "repository": "https://github.com/liqiuqiui/maibot-daily60s",
+    "homepage": "https://github.com/liqiuqiui/maibot-daily60s",
+    "documentation": "https://github.com/liqiuqiui/maibot-daily60s",
+    "issues": "https://github.com/liqiuqiui/maibot-daily60s/issues"
   },
   "host_application": {
     "min_version": "1.0.0",
