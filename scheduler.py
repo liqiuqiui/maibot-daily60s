@@ -5,13 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 
 import asyncio
-import logging
+from logging import Logger
 
 from .config import ApiConfig, Daily60sPluginConfig
 from .fetcher import API_REGISTRY, Fetcher
 from .sender import OneBotSender
 
-LOGGER = logging.getLogger("daily60s.scheduler")
 
 # 调度循环检查间隔（秒）
 _CHECK_INTERVAL_SEC = 60
@@ -31,10 +30,12 @@ class Scheduler:
 
     def __init__(
         self,
+        logger: Logger,
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
         sender: OneBotSender,
     ) -> None:
+        self._logger = logger
         self._config = config
         self._fetcher = fetcher
         self._sender = sender
@@ -47,7 +48,7 @@ class Scheduler:
         if self._task is not None and not self._task.done():
             return
         self._task = asyncio.create_task(self._loop())
-        LOGGER.info("定时推送调度器已启动")
+        self._logger.info("定时推送调度器已启动")
 
     async def stop(self) -> None:
         """取消并等待调度后台任务结束。"""
@@ -60,7 +61,7 @@ class Scheduler:
             pass
         finally:
             self._task = None
-        LOGGER.info("定时推送调度器已停止")
+        self._logger.info("定时推送调度器已停止")
 
     async def _loop(self) -> None:
         """调度主循环：每 60 秒检查一次所有启用定时推送的 API。"""
@@ -88,7 +89,7 @@ class Scheduler:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                LOGGER.exception("定时推送循环发生异常，继续运行")
+                self._logger.exception("定时推送循环发生异常，继续运行")
 
     def _validate_push_times(self) -> None:
         """校验所有启用定时推送的 API 的 push_time 格式，非法时记录错误。"""
@@ -98,7 +99,7 @@ class Scheduler:
             try:
                 datetime.strptime(api.push_time, "%H:%M")
             except ValueError:
-                LOGGER.error(
+                self._logger.error(
                     "API '%s' 的 push_time 格式非法：'%s'，该 API 的定时推送将不会触发。",
                     api.name,
                     api.push_time,
@@ -113,14 +114,14 @@ class Scheduler:
             api: 需要推送的 API 配置。
         """
         if not api.push_groups and not api.push_users:
-            LOGGER.info("API '%s' 的 push_groups 和 push_users 均为空，跳过定时推送", api.name)
+            self._logger.info("API '%s' 的 push_groups 和 push_users 均为空，跳过定时推送", api.name)
             return
 
         if api.name not in API_REGISTRY:
-            LOGGER.error("API '%s' 不在 API_REGISTRY 中，无法推送", api.name)
+            self._logger.error("API '%s' 不在 API_REGISTRY 中，无法推送", api.name)
             return
 
-        LOGGER.info("开始定时推送 API '%s'", api.name)
+        self._logger.info("开始定时推送 API '%s'", api.name)
         push_format = getattr(api, "push_format", "text")
         try:
             result = await self._fetcher.fetch(
@@ -129,7 +130,7 @@ class Scheduler:
                 push_format=push_format,
             )
         except Exception:
-            LOGGER.exception("定时推送拉取 API '%s' 失败，跳过", api.name)
+            self._logger.exception("定时推送拉取 API '%s' 失败，跳过", api.name)
             return
 
         # 推送至各个群
@@ -140,7 +141,7 @@ class Scheduler:
                 else:
                     await self._sender.send_group(int(group_id), result.content)
             except Exception:
-                LOGGER.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
+                self._logger.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
 
         # 推送至各个私聊用户
         for user_id in api.push_users:
@@ -150,4 +151,4 @@ class Scheduler:
                 else:
                     await self._sender.send_user(int(user_id), result.content)
             except Exception:
-                LOGGER.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)
+                self._logger.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)

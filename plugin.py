@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Optional, cast
 import json
-import logging
 
 from maibot_sdk import EventHandler, HookHandler, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import EventType, HookMode
@@ -34,6 +33,7 @@ class Daily60sPlugin(MaiBotPlugin):
 
         self._fetcher = Fetcher(timeout=cfg.fetch.timeout)
         self._sender = OneBotSender(
+            logger=self.ctx.logger,
             host=cfg.message_server.host,
             port=cfg.message_server.port,
             token=cfg.message_server.token,
@@ -41,6 +41,7 @@ class Daily60sPlugin(MaiBotPlugin):
         )
 
         self._scheduler = Scheduler(
+            logger=self.ctx.logger,
             config=cfg,
             fetcher=self._fetcher,
             sender=self._sender,
@@ -113,7 +114,7 @@ class Daily60sPlugin(MaiBotPlugin):
             return None
 
         # 根据消息类型取发送目标 ID
-        msg_type = message.get("message_info", {}).get("message_type", "group")
+        msg_type = message.get("message_info", {}).get("additional_config", "").get("napcat_message_type")
         group_info = message.get("message_info", {}).get("group_info") or {}
         user_info = message.get("message_info", {}).get("user_info") or {}
         group_id: str = group_info.get("group_id", "")
@@ -124,7 +125,7 @@ class Daily60sPlugin(MaiBotPlugin):
         if msg_type == "private" and not user_id:
             return None
 
-        raw = message.get("plain_text", "") if isinstance(message, dict) else str(message)
+        raw = message.get("processed_plain_text", "") if isinstance(message, dict) else str(message)
         parts = raw.strip().split()
         if not parts:
             return None
@@ -195,7 +196,7 @@ class Daily60sPlugin(MaiBotPlugin):
             else:
                 await self._sender.send_group(int(group_id), "内容获取失败，请稍后重试")
 
-        return None
+        return {"action": "abort"}
 
 
 def create_plugin() -> Daily60sPlugin:

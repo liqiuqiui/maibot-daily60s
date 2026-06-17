@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import logging
+from logging import Logger
 import urllib.parse
 from urllib.parse import urlencode
 
 import aiohttp
-
-LOGGER = logging.getLogger("daily60s.sender")
 
 
 class OneBotSender:
@@ -23,12 +21,13 @@ class OneBotSender:
         timeout: HTTP 请求超时秒数。
     """
 
-    def __init__(self, host: str, port: int, token: str, timeout: int) -> None:
+    def __init__(self, logger: Logger, host: str, port: int, token: str, timeout: int) -> None:
         # 解析 host，防止用户填入 "http://127.0.0.1:5700" 导致双重端口拼接
         parsed = urllib.parse.urlsplit(host)
         self._base_url = f"{parsed.scheme}://{parsed.hostname}:{port}"
         self._token = token
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._logger = logger
 
     def _build_url(self, action: str) -> str:
         """构造完整请求 URL，token 非空时附加 access_token 查询参数。"""
@@ -44,18 +43,18 @@ class OneBotSender:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
                 async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
-                        LOGGER.warning("OneBot 请求失败，HTTP %d，payload=%s", resp.status, payload)
+                        self._logger.warning("OneBot 请求失败，HTTP %d，payload=%s", resp.status, payload)
                         return
                     data = await resp.json(content_type=None)
                     if data.get("status") not in ("ok", "async"):
-                        LOGGER.warning(
+                        self._logger.warning(
                             "OneBot 返回失败状态：status=%s retcode=%s，payload=%s",
                             data.get("status"),
                             data.get("retcode"),
                             payload,
                         )
         except Exception:
-            LOGGER.warning("发送 OneBot 消息时发生异常，payload=%s", payload, exc_info=True)
+            self._logger.warning("发送 OneBot 消息时发生异常，payload=%s", payload, exc_info=True)
 
     async def send_group(self, group_id: int, message: str) -> None:
         """发送群消息。
