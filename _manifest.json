@@ -27,12 +27,13 @@
     "send.text",
     "send.image",
     "config.get",
-    "chat.get_stream_by_group_id"
+    "chat.get_stream_by_group_id",
+    "render.html2png"
   ],
   "i18n": {
     "default_locale": "zh-CN",
     "locales_path": "_locales",
     "supported_locales": ["zh-CN"]
   },
-  "id": "maibot-team.daily60s-plugin"
+  "id": "maibot.daily60s-plugin"
 }

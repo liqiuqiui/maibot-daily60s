@@ -31,7 +31,7 @@ class Daily60sPlugin(MaiBotPlugin):
         cfg = cast(Daily60sPluginConfig, self.config)
         self.ctx.logger.warning("Daily60sPlugin init")
 
-        self._fetcher = Fetcher(timeout=cfg.fetch.timeout)
+        self._fetcher = Fetcher(logger=self.ctx.logger, timeout=cfg.fetch.timeout)
         self._sender = OneBotSender(
             logger=self.ctx.logger,
             host=cfg.message_server.host,
@@ -40,11 +40,16 @@ class Daily60sPlugin(MaiBotPlugin):
             timeout=cfg.fetch.timeout,
         )
 
+        async def _render_fn(html: str) -> str:
+            result = await self.ctx.render.html2png(html, selector="body", device_scale_factor=2.0)
+            return result["image_base64"]
+
         self._scheduler = Scheduler(
             logger=self.ctx.logger,
             config=cfg,
             fetcher=self._fetcher,
             sender=self._sender,
+            render_fn=_render_fn,
         )
         self._scheduler.start()
         self.ctx.logger.info("每日速读插件已加载，共 %d 个 API", len(cfg.apis))
@@ -107,7 +112,7 @@ class Daily60sPlugin(MaiBotPlugin):
         message = kwargs.get("message")
         if message is None:
             return None
-        self.ctx.logger.info(f"接受消息:\n {json.dumps(obj=message, indent=2, ensure_ascii=False)}")
+
         cfg = cast(Daily60sPluginConfig, self.config)
 
         if not message.get("is_command") or not cfg.plugin.enabled:
@@ -164,7 +169,7 @@ class Daily60sPlugin(MaiBotPlugin):
                 params[param_name] = arg_tokens[i]
             else:
                 # 必填参数缺失，回复用法提示
-                usage = f"用法：{parts[0]} " + " ".join(f"<{n}>" for n in definition.param_names)
+                usage = f"参数错误，用法：{parts[0]} " + " ".join(f"<{n}>" for n in definition.param_names)
                 if msg_type == "private":
                     await self._sender.send_user(int(user_id), usage)
                 else:
@@ -180,15 +185,17 @@ class Daily60sPlugin(MaiBotPlugin):
                 push_format=push_format,
             )
             if msg_type == "private":
+                content = await self._resolve_content(result.content, result.html)
                 if result.is_image:
-                    await self._sender.send_user_image(int(user_id), result.content)
+                    await self._sender.send_user_image(int(user_id), content)
                 else:
-                    await self._sender.send_user(int(user_id), result.content)
+                    await self._sender.send_user(int(user_id), content)
             else:
+                content = await self._resolve_content(result.content, result.html)
                 if result.is_image:
-                    await self._sender.send_group_image(int(group_id), result.content)
+                    await self._sender.send_group_image(int(group_id), content)
                 else:
-                    await self._sender.send_group(int(group_id), result.content)
+                    await self._sender.send_group(int(group_id), content)
         except Exception:
             self.ctx.logger.exception("拉取 API '%s' 失败", matched_api.name)
             if msg_type == "private":
@@ -197,6 +204,13 @@ class Daily60sPlugin(MaiBotPlugin):
                 await self._sender.send_group(int(group_id), "内容获取失败，请稍后重试")
 
         return {"action": "abort"}
+
+    async def _resolve_content(self, content: str, html: str) -> str:
+        """将 html 字段渲染为 base64 PNG，或直接返回 content。"""
+        if html:
+            result = await self.ctx.render.html2png(html, selector="body", device_scale_factor=2.0)
+            return result["image_base64"]
+        return content
 
 
 def create_plugin() -> Daily60sPlugin:

@@ -9,11 +9,9 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any
 
-import logging
+from logging import Logger
 
 import aiohttp
-
-LOGGER = logging.getLogger("daily60s.fetcher")
 
 
 @dataclass
@@ -23,10 +21,12 @@ class FetchResult:
     Attributes:
         content: 文本内容或图片 base64 字符串。
         is_image: 为 True 时 content 是 base64 图片，应调用 send.image 发送。
+        html: 非空时表示需要调用方用 ctx.render.html2png 渲染，渲染后作为图片发送。
     """
 
     content: str
     is_image: bool = False
+    html: str = ""
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class ApiDefinition:
         path: API 路径，拼接在 base_url 后构成完整请求 URL。
         formatter: 响应格式化器标识。
         param_names: 从用户消息空格分割后依次提取的 URL 查询参数名列表。
-                     例如 ["city"] 表示命令后第一个词作为 city 参数。
+                     例如 ["region"] 表示命令后第一个词作为 region 参数。
     """
 
     path: str
@@ -58,9 +58,9 @@ API_REGISTRY: dict[str, ApiDefinition] = {
         param_names=[],
     ),
     "gas_price": ApiDefinition(
-        path="/v2/gas-price",
+        path="/v2/fuel-price",
         formatter="gas_price",
-        param_names=["city"],
+        param_names=["region"],
     ),
 }
 
@@ -72,8 +72,9 @@ class Fetcher:
         timeout: HTTP 请求超时秒数。
     """
 
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, logger: Logger, timeout: int) -> None:
         self._timeout = timeout
+        self.logger = logger
 
     async def fetch(
         self,
@@ -110,6 +111,7 @@ class Fetcher:
 
         for base_url in base_urls:
             url = base_url.rstrip("/") + definition.path
+            self.logger.info(f"params={params}, url={url}")
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.get(url, params=params or {}) as resp:
@@ -120,9 +122,9 @@ class Fetcher:
                             data = await resp.json(content_type=None)
                         else:
                             data = (await resp.text()).strip()
-                return await self._format(data, definition, params, push_format)
+                return await self._format(data, definition, push_format)
             except Exception as exc:
-                LOGGER.warning("请求 %s 失败（%s），尝试下一个数据源", url, exc)
+                self.logger.warning("请求 %s 失败（%s），尝试下一个数据源", url, exc)
                 last_error = exc
 
         raise RuntimeError(f"API '{api_name}' 所有数据源均请求失败") from last_error
@@ -131,7 +133,6 @@ class Fetcher:
         self,
         data: Any,
         definition: ApiDefinition,
-        params: dict[str, str] | None,
         push_format: str = "text",
     ) -> FetchResult:
         """根据 definition.formatter 将响应数据转换为 FetchResult。
@@ -139,8 +140,7 @@ class Fetcher:
         Args:
             data: 已解析的响应数据（dict、list 或 str）。
             definition: API 硬编码定义。
-            params: 本次请求携带的参数，供部分格式化器使用。
-            push_format: "text" 或 "image"，仅 daily_news 支持 image。
+            push_format: "text" 或 "image"，仅部分 formatter 支持 image。
 
         Returns:
             FetchResult: 拉取结果。
@@ -148,9 +148,9 @@ class Fetcher:
         if definition.formatter == "60s":
             return await self._format_60s(data, push_format)
         if definition.formatter == "gold_price":
-            return self._format_gold_price(data)
+            return await self._format_gold_price(data)
         if definition.formatter == "gas_price":
-            return self._format_gas_price(data, params)
+            return await self._format_gas_price(data, push_format)
         return self._format_auto(data, definition.path)
 
     # ── 专用格式化器 ──────────────────────────────────────────────────────────
@@ -174,7 +174,7 @@ class Fetcher:
                     b64 = await self._download_image_as_base64(image_url)
                     return FetchResult(content=b64, is_image=True)
                 except Exception as exc:
-                    LOGGER.warning("图片下载失败（%s），回退到文本模式", exc)
+                    self.logger.warning("图片下载失败（%s），回退到文本模式", exc)
             # 图片不可用时回退文本
 
         date = inner.get("date", "")
@@ -209,8 +209,9 @@ class Fetcher:
                 raw = await resp.read()
                 return base64.b64encode(raw).decode()
 
-    def _format_gold_price(self, data: Any) -> FetchResult:
+    async def _format_gold_price(self, data: Any) -> FetchResult:
         """格式化 /v2/gold-price 黄金价格响应。"""
+
         if not isinstance(data, dict):
             return FetchResult(content=str(data))
 
@@ -246,76 +247,169 @@ class Fetcher:
 
         return FetchResult(content="\n".join(lines) if lines else str(data))
 
-    def _format_gas_price(self, data: Any, params: dict[str, str] | None) -> FetchResult:
-        """格式化 /v2/gas-price 汽油价格响应。"""
-        if not isinstance(data, dict):
-            return FetchResult(content=str(data))
+    async def _format_gas_price(
+        self,
+        response: Any,
+        push_format: str = "text",
+    ) -> FetchResult:
+        """格式化 /v2/gas-price 汽油价格响应。
 
-        inner = data.get("data", {})
-        if not isinstance(inner, dict):
-            return FetchResult(content=str(data))
+        支持文本和图片两种格式，通过 push_format 参数控制。
+        """
+        if not response.get("code") == 200:
+            return FetchResult(content=response.get("message") or "数据获取失败")
 
-        date: str = inner.get("date", "")
-        city = (params or {}).get("city", "")
+        data = response.get("data", {})
+        region: str = data.get("region", "")
+        items: list[Any] = data.get("items", [])
+        trend: dict[str, Any] = data.get("trend", {})
+        updated: str = data.get("updated", "")
 
-        lines: list[str] = []
-        title = f"⛽ 汽油价格  {date}" if date else "⛽ 汽油价格"
-        if city:
-            title += f"  [{city}]"
-        lines.append(title)
-        lines.append("")
+        if not items:
+            return FetchResult(content="暂无价格数据")
 
-        # 支持单城市结构（province 字段）和全省列表结构（provinces/list 字段）
-        province_data: dict[str, Any] | None = None
-        if "province" in inner:
-            province_data = inner
-        elif city:
-            # 尝试从列表里找匹配的城市
-            for key in ("provinces", "list", "data"):
-                lst = inner.get(key, [])
-                if isinstance(lst, list):
-                    for item in lst:
-                        if isinstance(item, dict) and city in str(item.get("name", "")):
-                            province_data = item
-                            break
-                if province_data:
-                    break
+        if push_format == "image":
+            html = self._build_gas_price_html(region, items, trend, updated)
+            return FetchResult(content="", is_image=True, html=html)
 
-        if province_data:
-            name = province_data.get("name") or province_data.get("province", "")
-            p92 = province_data.get("p92") or province_data.get("92", "")
-            p95 = province_data.get("p95") or province_data.get("95", "")
-            p98 = province_data.get("p98") or province_data.get("98", "")
-            diesel = province_data.get("diesel") or province_data.get("0", "")
-            if name:
-                lines.append(f"地区：{name}")
-            if p92:
-                lines.append(f"92号汽油：{p92} 元/升")
-            if p95:
-                lines.append(f"95号汽油：{p95} 元/升")
-            if p98:
-                lines.append(f"98号汽油：{p98} 元/升")
-            if diesel:
-                lines.append(f"0号柴油：{diesel} 元/升")
-        else:
-            # 全省列表，逐行列出
-            for key in ("provinces", "list"):
-                lst = inner.get(key, [])
-                if isinstance(lst, list) and lst:
-                    for item in lst:
-                        if not isinstance(item, dict):
-                            continue
-                        name = item.get("name", item.get("province", ""))
-                        p92 = item.get("p92", item.get("92", ""))
-                        p95 = item.get("p95", item.get("95", ""))
-                        diesel = item.get("diesel", item.get("0", ""))
-                        lines.append(f"{name}  92:{p92}  95:{p95}  柴:{diesel}")
-                    break
-            else:
-                LOGGER.warning("gas_price 响应结构未知，返回原始内容")
-                return FetchResult(content=str(data))
+        # 文本表格格式 - 纯空格对齐
+        def display_width(s: str) -> int:
+            return sum(2 if ord(c) > 127 else 1 for c in s)
+
+        col1_header = "油品类型"
+        col2_header = "价格(元/升)"
+        col1_w = max(display_width(col1_header), *(display_width(it.get("name", "")) for it in items))
+
+        lines = [f"⛽ {region}今日油价", f"更新时间：{updated}", ""]
+
+        def pad(s: str, width: int) -> str:
+            return s + " " * (width - display_width(s))
+
+        lines.append(f"{pad(col1_header, col1_w)}  {col2_header}")
+        for item in items:
+            name: str = item.get("name", "")
+            price: float = item.get("price", 0)
+            lines.append(f"{pad(name, col1_w)}  {price:.2f}")
+
+        if trend:
+            desc: str = trend.get("description", "")
+            if desc:
+                lines.append("")
+                lines.append(f"💡 {desc}")
 
         return FetchResult(content="\n".join(lines))
+
+    @staticmethod
+    def _build_gas_price_html(
+        region: str,
+        items: list[Any],
+        trend: dict[str, Any],
+        updated: str,
+    ) -> str:
+        """构建油价卡片 HTML，供调用方通过 ctx.render.html2png 渲染为图片。"""
+        desc: str = trend.get("description", "") if trend else ""
+
+        rows_html = "\n".join(
+            f"""<tr>
+                <td>{item.get("name", "")}</td>
+                <td class="price">{item.get("price", 0):.2f}</td>
+                <td class="unit">元/升</td>
+            </tr>"""
+            for item in items
+        )
+
+        tip_html = f'<div class="tip">💡 {desc}</div>' if desc else ""
+
+        return f"""<!DOCTYPE html>
+                    <html>
+                        <head>
+                            <meta charset="utf-8">
+                            <style>
+                            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                            body {{
+                                font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+                                background: #ffffff;
+                                padding: 24px;
+                                width: 420px;
+                            }}
+                            .title {{
+                                font-size: 22px;
+                                font-weight: 600;
+                                color: #1a1a1a;
+                                margin-bottom: 4px;
+                            }}
+                            .subtitle {{
+                                font-size: 12px;
+                                color: #999;
+                                margin-bottom: 16px;
+                            }}
+                            table {{
+                                width: 100%;
+                                border-collapse: collapse;
+                            }}
+                            thead tr {{
+                                border-bottom: 2px solid #e5e5e5;
+                            }}
+                            th {{
+                                font-size: 13px;
+                                color: #888;
+                                font-weight: 500;
+                                padding: 6px 0 10px 0;
+                                text-align: left;
+                            }}
+                            th:not(:first-child) {{ text-align: right; }}
+                            tbody tr {{
+                                border-bottom: 1px solid #f0f0f0;
+                            }}
+                            tbody tr:last-child {{ border-bottom: none; }}
+                            td {{
+                                padding: 12px 0;
+                                font-size: 16px;
+                                color: #1a1a1a;
+                            }}
+                            td.price {{
+                                text-align: right;
+                                font-size: 18px;
+                                font-weight: 600;
+                                color: #e05030;
+                            }}
+                            td.unit {{
+                                text-align: right;
+                                font-size: 13px;
+                                color: #999;
+                                padding-left: 4px;
+                                width: 40px;
+                            }}
+                            .tip {{
+                                margin-top: 14px;
+                                padding: 10px 12px;
+                                background: #f9f6f0;
+                                border-radius: 6px;
+                                font-size: 12px;
+                                color: #888;
+                                line-height: 1.6;
+                            }}
+                            </style>
+                        </head>
+                    <body>
+                        <div class="title">⛽ {region}今日油价</div>
+                        <div class="subtitle">更新时间：{updated}</div>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>油品类型</th>
+                                    <th>价格</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rows_html}
+                            </tbody>
+                        </table>
+                        {tip_html}
+                    </body>
+                    </html>
+                """
 
     def _format_auto(self, data: Any, path: str) -> FetchResult:
         """通用格式化器：优先读取常见字段，否则返回原始内容。"""
@@ -333,5 +427,5 @@ class Fetcher:
                 if isinstance(value, list):
                     return FetchResult(content="\n".join(str(item) for item in value if item))
 
-        LOGGER.warning("API '%s' 的响应结构无法识别，返回原始内容", path)
+        self.logger.warning("API '%s' 的响应结构无法识别，返回原始内容", path)
         return FetchResult(content=str(data))

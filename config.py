@@ -346,7 +346,7 @@ class GoldPriceApiConfig(ApiConfig):
 
 
 class GasPriceApiConfig(ApiConfig):
-    """汽油价格 API 配置（路径：/v2/gas-price，参数：city=<城市名>）。"""
+    """汽油价格 API 配置（路径：/v2/gas-price，参数：region=<城市名>）。"""
 
     __ui_label__: ClassVar[str] = "汽油价格"
     __ui_icon__: ClassVar[str] = "fuel"
@@ -366,6 +366,22 @@ class GasPriceApiConfig(ApiConfig):
             "placeholder": "例如：/gas_price",
         },
     )
+    push_format: Literal["text", "image"] = Field(
+        default="text",
+        description="推送格式：text（文字表格）或 image（图片）。",
+        json_schema_extra={
+            "hint": "选择 image 时推送渲染后的油价图片，选择 text 时推送文字表格。",
+            "label": "推送格式",
+            "order": 6,
+        },
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        """规范化推送格式字段，非法值回退到 text。"""
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "text"
 
 
 class Daily60sPluginConfig(PluginConfigBase):

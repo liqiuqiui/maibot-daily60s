@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from datetime import datetime
+from typing import Any, Optional
 
 import asyncio
 from logging import Logger
@@ -11,9 +13,11 @@ from .config import ApiConfig, Daily60sPluginConfig
 from .fetcher import API_REGISTRY, Fetcher
 from .sender import OneBotSender
 
-
 # 调度循环检查间隔（秒）
 _CHECK_INTERVAL_SEC = 60
+
+RenderFn = Callable[[str], Coroutine[Any, Any, str]]
+"""签名：async def render_fn(html: str) -> str（返回 base64 PNG）"""
 
 
 class Scheduler:
@@ -23,9 +27,11 @@ class Scheduler:
     推送目标通过 QQ 群号 / 私聊 QQ 号配置，直接通过 OneBotSender 发送。
 
     Args:
+        logger: 日志记录器。
         config: 插件完整配置。
         fetcher: 已初始化的数据源拉取器。
         sender: OneBot HTTP 消息发送器。
+        render_fn: 可选的 HTML→PNG 渲染函数，用于渲染图片消息。
     """
 
     def __init__(
@@ -34,11 +40,13 @@ class Scheduler:
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
         sender: OneBotSender,
+        render_fn: Optional[RenderFn] = None,
     ) -> None:
         self._logger = logger
         self._config = config
         self._fetcher = fetcher
         self._sender = sender
+        self._render_fn = render_fn
         self._task: asyncio.Task[None] | None = None
         # 记录每个 API 当天是否已推送，键为 api_name，值为最后推送日期 YYYY-MM-DD
         self._last_push_date: dict[str, str] = {}
@@ -136,19 +144,35 @@ class Scheduler:
         # 推送至各个群
         for group_id in api.push_groups:
             try:
+                content = await self._resolve_content(result.content, result.html)
                 if result.is_image:
-                    await self._sender.send_group_image(int(group_id), result.content)
+                    await self._sender.send_group_image(int(group_id), content)
                 else:
-                    await self._sender.send_group(int(group_id), result.content)
+                    await self._sender.send_group(int(group_id), content)
             except Exception:
                 self._logger.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
 
         # 推送至各个私聊用户
         for user_id in api.push_users:
             try:
+                content = await self._resolve_content(result.content, result.html)
                 if result.is_image:
-                    await self._sender.send_user_image(int(user_id), result.content)
+                    await self._sender.send_user_image(int(user_id), content)
                 else:
-                    await self._sender.send_user(int(user_id), result.content)
+                    await self._sender.send_user(int(user_id), content)
             except Exception:
                 self._logger.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)
+
+    async def _resolve_content(self, content: str, html: str) -> str:
+        """将 FetchResult 的 html 字段渲染为 base64，或直接返回 content。
+
+        Args:
+            content: 文本内容或已有 base64 图片字符串。
+            html: 待渲染的 HTML，非空时调用 render_fn 渲染。
+
+        Returns:
+            str: 最终内容（base64 或文本）。
+        """
+        if html and self._render_fn:
+            return await self._render_fn(html)
+        return content
