@@ -10,11 +10,13 @@ import re
 from maibot_sdk import Field, PluginConfigBase
 from pydantic import field_validator
 
+from .fetcher import API_REGISTRY
+
 LOGGER = logging.getLogger("daily60s.config")
 
 _PUSH_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
-SUPPORTED_CONFIG_VERSION = "1.3.0"
+SUPPORTED_CONFIG_VERSION = "1.4.0"
 
 
 def _normalize_string(value: Any) -> str:
@@ -343,6 +345,17 @@ class GoldPriceApiConfig(ApiConfig):
             "placeholder": "例如：/gold_price",
         },
     )
+    push_format: Literal["text", "image"] = Field(
+        default="image",
+        description="推送格式：text（文字列表）或 image（长图）。",
+        json_schema_extra={"label": "推送格式", "order": 6},
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "image"
 
 
 class GasPriceApiConfig(ApiConfig):
@@ -384,6 +397,108 @@ class GasPriceApiConfig(ApiConfig):
         return normalized if normalized in ("text", "image") else "text"
 
 
+class AiNewsApiConfig(ApiConfig):
+    """AI 资讯快报 API 配置。"""
+
+    __ui_label__: ClassVar[str] = "AI 资讯快报"
+    __ui_icon__: ClassVar[str] = "bot"
+    __ui_order__: ClassVar[int] = 6
+
+    name: str = Field(
+        default="ai_news",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/ai_news", "/ai"],
+        description="触发关键词列表，必须以 / 开头。用法：/ai_news [YYYY-MM-DD] [all]",
+        json_schema_extra={
+            "hint": "支持可选日期参数 YYYY-MM-DD，也支持 all 参数请求全部日期。",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/ai_news",
+        },
+    )
+    push_format: Literal["text", "image"] = Field(
+        default="image",
+        description="推送格式：text（文字列表）或 image（长图）。",
+        json_schema_extra={"label": "推送格式", "order": 6},
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "image"
+
+
+class TodayInHistoryApiConfig(ApiConfig):
+    """历史上的今天 API 配置。"""
+
+    __ui_label__: ClassVar[str] = "历史上的今天"
+    __ui_icon__: ClassVar[str] = "history"
+    __ui_order__: ClassVar[int] = 7
+
+    name: str = Field(
+        default="today_in_history",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/today_history", "/history_today"],
+        description="触发关键词列表，必须以 / 开头。用法：/today_history [YYYY-MM-DD]",
+        json_schema_extra={
+            "hint": "支持可选日期参数 YYYY-MM-DD，不填则按接口默认返回当天数据。",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/today_history",
+        },
+    )
+    push_format: Literal["text", "image"] = Field(
+        default="image",
+        description="推送格式：text（文字列表）或 image（长图）。",
+        json_schema_extra={"label": "推送格式", "order": 6},
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "image"
+
+
+class ItNewsApiConfig(ApiConfig):
+    """实时 IT 资讯 API 配置。"""
+
+    __ui_label__: ClassVar[str] = "实时 IT 资讯"
+    __ui_icon__: ClassVar[str] = "cpu"
+    __ui_order__: ClassVar[int] = 8
+
+    name: str = Field(
+        default="it_news",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "API 标识", "order": 99},
+    )
+    keywords: List[str] = Field(
+        default_factory=lambda: ["/it_news", "/it"],
+        description="触发关键词列表，必须以 / 开头。用法：/it_news [limit]",
+        json_schema_extra={
+            "hint": "支持可选条数参数，范围 1-50，不填时使用接口默认值。",
+            "label": "触发关键词",
+            "order": 1,
+            "placeholder": "例如：/it_news",
+        },
+    )
+    push_format: Literal["text", "image"] = Field(
+        default="image",
+        description="推送格式：text（文字列表）或 image（长图）。",
+        json_schema_extra={"label": "推送格式", "order": 6},
+    )
+
+    @field_validator("push_format", mode="before")
+    @classmethod
+    def _normalize_push_format(cls, value: Any) -> str:
+        normalized = _normalize_string(value).lower()
+        return normalized if normalized in ("text", "image") else "image"
+
+
 class Daily60sPluginConfig(PluginConfigBase):
     """每日速读插件完整配置。"""
 
@@ -393,8 +508,12 @@ class Daily60sPluginConfig(PluginConfigBase):
     daily_news: DailyNewsApiConfig = Field(default_factory=DailyNewsApiConfig)
     gold_price: GoldPriceApiConfig = Field(default_factory=GoldPriceApiConfig)
     gas_price: GasPriceApiConfig = Field(default_factory=GasPriceApiConfig)
+    ai_news: AiNewsApiConfig = Field(default_factory=AiNewsApiConfig)
+    today_in_history: TodayInHistoryApiConfig = Field(default_factory=TodayInHistoryApiConfig)
+    it_news: ItNewsApiConfig = Field(default_factory=ItNewsApiConfig)
 
     @property
     def apis(self) -> List[ApiConfig]:
         """返回所有 API 配置列表，供 plugin.py 和 scheduler.py 统一迭代。"""
-        return [self.daily_news, self.gold_price, self.gas_price]
+        ordered_api_names = [api_name for api_name in API_REGISTRY if hasattr(self, api_name)]
+        return [getattr(self, api_name) for api_name in ordered_api_names]

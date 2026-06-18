@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from typing import Any, ClassVar, Optional, cast
-import json
 
-from maibot_sdk import EventHandler, HookHandler, MaiBotPlugin, PluginConfigBase
-from maibot_sdk.types import EventType, HookMode
+from maibot_sdk import HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.types import HookMode
 
 from .config import ApiConfig, Daily60sPluginConfig
-from .fetcher import API_REGISTRY, Fetcher
+from .delivery import deliver_fetch_result
+from .fetcher import API_REGISTRY, CommandUsageError, Fetcher, build_api_request_params, build_command_usage
 from .scheduler import Scheduler
 from .sender import OneBotSender
 
@@ -25,6 +25,7 @@ class Daily60sPlugin(MaiBotPlugin):
         self._fetcher: Optional[Fetcher] = None
         self._scheduler: Optional[Scheduler] = None
         self._sender: Optional[OneBotSender] = None
+        self._render_fn = None
 
     async def on_load(self) -> None:
         """加载插件：初始化 Fetcher、OneBotSender 和 Scheduler，启动调度循环。"""
@@ -40,10 +41,13 @@ class Daily60sPlugin(MaiBotPlugin):
             timeout=cfg.fetch.timeout,
         )
 
+        # 图片类内容统一先产出 HTML，再由插件上下文负责截图成 PNG。
+        # 这里把渲染器闭包保存下来，命令触发和定时推送都复用同一条链路。
         async def _render_fn(html: str) -> str:
             result = await self.ctx.render.html2png(html, selector="body", device_scale_factor=2.0)
             return result["image_base64"]
 
+        self._render_fn = _render_fn
         self._scheduler = Scheduler(
             logger=self.ctx.logger,
             config=cfg,
@@ -61,6 +65,7 @@ class Daily60sPlugin(MaiBotPlugin):
             self._scheduler = None
         self._fetcher = None
         self._sender = None
+        self._render_fn = None
         self.ctx.logger.info("每日速读插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
@@ -81,15 +86,6 @@ class Daily60sPlugin(MaiBotPlugin):
         # 重建 Fetcher 和 Scheduler 以使新配置生效
         await self.on_unload()
         await self.on_load()
-
-    @EventHandler(
-        "on_startup",
-        description="插件启动时初始化资源",
-        event_type=EventType.ON_START,
-    )
-    async def handle_startup(self, **kwargs):
-        self.ctx.logger.info("启动事件触发，开始初始化")
-        # 在这里执行启动时需要的初始化逻辑
 
     @HookHandler(
         hook="chat.receive.before_process",
@@ -118,10 +114,17 @@ class Daily60sPlugin(MaiBotPlugin):
         if not message.get("is_command") or not cfg.plugin.enabled:
             return None
 
-        # 根据消息类型取发送目标 ID
-        msg_type = message.get("message_info", {}).get("additional_config", "").get("napcat_message_type")
-        group_info = message.get("message_info", {}).get("group_info") or {}
-        user_info = message.get("message_info", {}).get("user_info") or {}
+        # OneBot 上下文里，群聊和私聊的目标 ID 放在不同字段。
+        # 这里先把原始 message_info 拆开，后面路由和发送都只用 group_id / user_id。
+        message_info = message.get("message_info") or {}
+        if not isinstance(message_info, dict):
+            return None
+        additional_config = message_info.get("additional_config") or {}
+        if not isinstance(additional_config, dict):
+            additional_config = {}
+        msg_type = additional_config.get("napcat_message_type")
+        group_info = message_info.get("group_info") or {}
+        user_info = message_info.get("user_info") or {}
         group_id: str = group_info.get("group_id", "")
         user_id: str = user_info.get("user_id", "")
 
@@ -137,7 +140,11 @@ class Daily60sPlugin(MaiBotPlugin):
 
         command_token = parts[0].lower()
 
-        # 在所有启用的 API 中查找匹配的关键词
+        if getattr(self, "_ctx", None) is not None:
+            self.ctx.logger.info("daily60s 当前配置：%s", cfg.model_dump_json(indent=2))
+
+        # 配置层仍然保持“一 API 一配置块”，但运行时只按统一 apis 列表扫描，
+        # 这样新增模块时不用改命令路由骨架。
         matched_api: Optional[ApiConfig] = None
         for api in cfg.apis:
             if not api.enabled:
@@ -153,28 +160,27 @@ class Daily60sPlugin(MaiBotPlugin):
             return None
 
         if self._fetcher is None or self._sender is None:
-            self.ctx.logger.error("插件尚未初始化，无法处理关键词触发请求")
+            if getattr(self, "_ctx", None) is not None:
+                self.ctx.logger.error("插件尚未初始化，无法处理关键词触发请求")
             return None
 
-        # 从 API_REGISTRY 取参数名定义，按位置从消息 token 中提取参数值
+        # 命令参数解析完全交给 fetcher 里的 registry 定义。
+        # plugin 只负责把命令 token 切出来，并在解析失败时返回用法提示。
         definition = API_REGISTRY.get(matched_api.name)
         if definition is None:
             self.ctx.logger.error("API '%s' 不在 API_REGISTRY 中", matched_api.name)
             return None
 
-        params: dict[str, str] = {}
         arg_tokens = parts[1:]
-        for i, param_name in enumerate(definition.param_names):
-            if i < len(arg_tokens):
-                params[param_name] = arg_tokens[i]
-            else:
-                # 必填参数缺失，回复用法提示
-                usage = f"参数错误，用法：{parts[0]} " + " ".join(f"<{n}>" for n in definition.param_names)
-                if msg_type == "private":
-                    await self._sender.send_user(int(user_id), usage)
-                else:
-                    await self._sender.send_group(int(group_id), usage)
-                return None
+        try:
+            params = build_api_request_params(definition, arg_tokens)
+        except CommandUsageError:
+            usage = build_command_usage(parts[0], definition)
+            if msg_type == "private":
+                await self._sender.send_user(int(user_id), usage)
+            elif msg_type == "group":
+                await self._sender.send_group(int(group_id), usage)
+            return None
 
         push_format = getattr(matched_api, "push_format", "text")
         try:
@@ -184,18 +190,26 @@ class Daily60sPlugin(MaiBotPlugin):
                 params=params or None,
                 push_format=push_format,
             )
+            # deliver_fetch_result 会统一处理：
+            # 1. 文本直接发送
+            # 2. HTML 先 render 成图片
+            # 3. 图片按 group/user 分流
             if msg_type == "private":
-                content = await self._resolve_content(result.content, result.html)
-                if result.is_image:
-                    await self._sender.send_user_image(int(user_id), content)
-                else:
-                    await self._sender.send_user(int(user_id), content)
-            else:
-                content = await self._resolve_content(result.content, result.html)
-                if result.is_image:
-                    await self._sender.send_group_image(int(group_id), content)
-                else:
-                    await self._sender.send_group(int(group_id), content)
+                await deliver_fetch_result(
+                    sender=self._sender,
+                    target_kind="user",
+                    target_id=int(user_id),
+                    result=result,
+                    render_fn=self._render_fn,
+                )
+            elif msg_type == "group":
+                await deliver_fetch_result(
+                    sender=self._sender,
+                    target_kind="group",
+                    target_id=int(group_id),
+                    result=result,
+                    render_fn=self._render_fn,
+                )
         except Exception:
             self.ctx.logger.exception("拉取 API '%s' 失败", matched_api.name)
             if msg_type == "private":
@@ -204,13 +218,6 @@ class Daily60sPlugin(MaiBotPlugin):
                 await self._sender.send_group(int(group_id), "内容获取失败，请稍后重试")
 
         return {"action": "abort"}
-
-    async def _resolve_content(self, content: str, html: str) -> str:
-        """将 html 字段渲染为 base64 PNG，或直接返回 content。"""
-        if html:
-            result = await self.ctx.render.html2png(html, selector="body", device_scale_factor=2.0)
-            return result["image_base64"]
-        return content
 
 
 def create_plugin() -> Daily60sPlugin:

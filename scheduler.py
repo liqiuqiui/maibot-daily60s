@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
 from datetime import datetime
-from typing import Any, Optional
 
 import asyncio
 from logging import Logger
 
 from .config import ApiConfig, Daily60sPluginConfig
+from .delivery import RenderFn, deliver_fetch_result
 from .fetcher import API_REGISTRY, Fetcher
 from .sender import OneBotSender
 
 # 调度循环检查间隔（秒）
 _CHECK_INTERVAL_SEC = 60
-
-RenderFn = Callable[[str], Coroutine[Any, Any, str]]
-"""签名：async def render_fn(html: str) -> str（返回 base64 PNG）"""
 
 
 class Scheduler:
@@ -40,7 +36,7 @@ class Scheduler:
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
         sender: OneBotSender,
-        render_fn: Optional[RenderFn] = None,
+        render_fn: RenderFn | None = None,
     ) -> None:
         self._logger = logger
         self._config = config
@@ -56,7 +52,7 @@ class Scheduler:
         if self._task is not None and not self._task.done():
             return
         self._task = asyncio.create_task(self._loop())
-        self._logger.info("定时推送调度器已启动")
+        self._logger.info("定时推送调度器已启动，当前启用 %d 条定时任务", self._count_enabled_schedule_tasks())
 
     async def stop(self) -> None:
         """取消并等待调度后台任务结束。"""
@@ -90,9 +86,8 @@ class Scheduler:
                         continue
                     if self._last_push_date.get(api.name) == today:
                         continue
-                    # 记录推送日期，避免同日重复
-                    self._last_push_date[api.name] = today
-                    # 异步触发推送，不阻塞循环继续检查其他 API
+                    # 这里只负责“到点了可以推”，真正是否记为已推送，
+                    # 要等 _do_push 至少成功投递到一个目标后再写入 _last_push_date。
                     asyncio.create_task(self._do_push(api))
             except asyncio.CancelledError:
                 raise
@@ -112,6 +107,11 @@ class Scheduler:
                     api.name,
                     api.push_time,
                 )
+
+    def _count_enabled_schedule_tasks(self) -> int:
+        """统计当前启用的定时推送任务数量。"""
+
+        return sum(1 for api in self._config.apis if api.enabled and api.schedule_push)
 
     async def _do_push(self, api: ApiConfig) -> None:
         """执行单个 API 的定时推送。
@@ -141,38 +141,36 @@ class Scheduler:
             self._logger.exception("定时推送拉取 API '%s' 失败，跳过", api.name)
             return
 
+        # 只要任意一个群/用户发送成功，就视为本轮推送完成，避免重复轰炸。
+        # 如果全部失败，则不写去重标记，让下一轮仍有机会重试。
+        delivered = False
+
         # 推送至各个群
         for group_id in api.push_groups:
             try:
-                content = await self._resolve_content(result.content, result.html)
-                if result.is_image:
-                    await self._sender.send_group_image(int(group_id), content)
-                else:
-                    await self._sender.send_group(int(group_id), content)
+                await deliver_fetch_result(
+                    sender=self._sender,
+                    target_kind="group",
+                    target_id=int(group_id),
+                    result=result,
+                    render_fn=self._render_fn,
+                )
+                delivered = True
             except Exception:
                 self._logger.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
 
         # 推送至各个私聊用户
         for user_id in api.push_users:
             try:
-                content = await self._resolve_content(result.content, result.html)
-                if result.is_image:
-                    await self._sender.send_user_image(int(user_id), content)
-                else:
-                    await self._sender.send_user(int(user_id), content)
+                await deliver_fetch_result(
+                    sender=self._sender,
+                    target_kind="user",
+                    target_id=int(user_id),
+                    result=result,
+                    render_fn=self._render_fn,
+                )
+                delivered = True
             except Exception:
                 self._logger.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)
-
-    async def _resolve_content(self, content: str, html: str) -> str:
-        """将 FetchResult 的 html 字段渲染为 base64，或直接返回 content。
-
-        Args:
-            content: 文本内容或已有 base64 图片字符串。
-            html: 待渲染的 HTML，非空时调用 render_fn 渲染。
-
-        Returns:
-            str: 最终内容（base64 或文本）。
-        """
-        if html and self._render_fn:
-            return await self._render_fn(html)
-        return content
+        if delivered:
+            self._last_push_date[api.name] = datetime.now().strftime("%Y-%m-%d")
