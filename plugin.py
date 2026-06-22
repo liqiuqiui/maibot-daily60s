@@ -32,23 +32,16 @@ class Daily60sPlugin(MaiBotPlugin):
         self.ctx.logger.warning("Daily60sPlugin init")
 
         self._fetcher = Fetcher(logger=self.ctx.logger, timeout=cfg.fetch.timeout)
-        self._sender = OneBotSender(
-            logger=self.ctx.logger,
-            host=cfg.message_server.host,
-            port=cfg.message_server.port,
-            token=cfg.message_server.token,
-            timeout=cfg.fetch.timeout,
-        )
 
         async def _render_fn(html: str) -> str:
             result = await self.ctx.render.html2png(html, selector="body", device_scale_factor=2.0)
             return result["image_base64"]
 
         self._scheduler = Scheduler(
+            ctx=self.ctx,
             logger=self.ctx.logger,
             config=cfg,
             fetcher=self._fetcher,
-            sender=self._sender,
             render_fn=_render_fn,
         )
         self._scheduler.start()

@@ -9,6 +9,8 @@ from typing import Any, Optional
 import asyncio
 from logging import Logger
 
+from maibot_sdk import PluginContext
+
 from .config import ApiConfig, Daily60sPluginConfig
 from .fetcher import API_REGISTRY, Fetcher
 from .sender import OneBotSender
@@ -36,16 +38,18 @@ class Scheduler:
 
     def __init__(
         self,
+        ctx: PluginContext,
         logger: Logger,
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
-        sender: OneBotSender,
+        # sender: OneBotSender,
         render_fn: Optional[RenderFn] = None,
     ) -> None:
+        self._ctx = ctx
         self._logger = logger
         self._config = config
         self._fetcher = fetcher
-        self._sender = sender
+        # self._sender = sender
         self._render_fn = render_fn
         self._task: asyncio.Task[None] | None = None
         # 记录每个 API 当天是否已推送，键为 api_name，值为最后推送日期 YYYY-MM-DD

@@ -58,7 +58,7 @@ def _normalize_push_time_value(value: Any) -> str:
 class BaseApiConfig(PluginConfigBase):
     """单个 API 的可配置部分基类
     API 路径、请求参数和格式化器均由代码硬编码（见 fetcher.py API_REGISTRY），
-    此处只保存用户可调整的字段    """
+    此处只保存用户可调整的字段"""
 
     name: str = Field(
         default="",
@@ -124,7 +124,7 @@ class FetchConfig(PluginConfigBase):
 
     __ui_label__: ClassVar[str] = "数据源"
     __ui_icon__: ClassVar[str] = "globe"
-    __ui_order__: ClassVar[int] = 2
+    __ui_order__: ClassVar[int] = 1
 
     base_urls: list[str] = Field(
         default_factory=lambda: ["https://60s.viki.moe"],
@@ -231,6 +231,9 @@ class GasPriceApiConfig(BaseApiConfig):
 class BatchPushConfig(PluginConfigBase):
     """批量推送配置"""
 
+    __ui_label__ = "批量推送配置"
+    __ui_order__ = 2
+
     enabled: bool = Field(default=True, description="是否启用该组任务")
     apis: list[ApiName] = Field(
         default_factory=lambda: ["daily_news"],
@@ -291,6 +294,8 @@ class BatchPushConfig(PluginConfigBase):
 class ApiConfig(PluginConfigBase):
     """api配置"""
 
+    __ui_label__ = "api配置"
+
     daily_news: DailyNewsApiConfig = Field(default_factory=DailyNewsApiConfig)
     gold_price: GoldPriceApiConfig = Field(default_factory=GoldPriceApiConfig)
     gas_price: GasPriceApiConfig = Field(default_factory=GasPriceApiConfig)
@@ -301,7 +306,7 @@ class Daily60sPluginConfig(PluginConfigBase):
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     fetch: FetchConfig = Field(default_factory=FetchConfig)
-    batch_push_config: list[BatchPushConfig] = Field(default_factory=lambda: [])
+    batch_push_config: list[BatchPushConfig] = Field(default_factory=list)
     api_config: ApiConfig = Field(default_factory=ApiConfig)
 
     @property
