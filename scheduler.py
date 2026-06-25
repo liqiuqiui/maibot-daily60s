@@ -7,10 +7,11 @@ from datetime import datetime
 import asyncio
 from logging import Logger
 
+from maibot_sdk.context import PluginContext
+
 from .config import ApiConfig, Daily60sPluginConfig
 from .delivery import RenderFn, deliver_fetch_result
 from .fetcher import API_REGISTRY, Fetcher
-from .sender import OneBotSender
 
 # 调度循环检查间隔（秒）
 _CHECK_INTERVAL_SEC = 60
@@ -20,28 +21,28 @@ class Scheduler:
     """每日定时推送调度器。
 
     每个 API 独立配置推送时间和目标群聊，调度器统一在后台循环中检查。
-    推送目标通过 QQ 群号 / 私聊 QQ 号配置，直接通过 OneBotSender 发送。
+    推送目标通过 QQ 群号 / 私聊 QQ 号配置，使用插件上下文的 send 能力发送。
 
     Args:
         logger: 日志记录器。
+        ctx: 插件运行时上下文。
         config: 插件完整配置。
         fetcher: 已初始化的数据源拉取器。
-        sender: OneBot HTTP 消息发送器。
         render_fn: 可选的 HTML→PNG 渲染函数，用于渲染图片消息。
     """
 
     def __init__(
         self,
         logger: Logger,
+        ctx: PluginContext,
         config: Daily60sPluginConfig,
         fetcher: Fetcher,
-        sender: OneBotSender,
         render_fn: RenderFn | None = None,
     ) -> None:
         self._logger = logger
+        self._ctx = ctx
         self._config = config
         self._fetcher = fetcher
-        self._sender = sender
         self._render_fn = render_fn
         self._task: asyncio.Task[None] | None = None
         # 记录每个 API 当天是否已推送，键为 api_name，值为最后推送日期 YYYY-MM-DD
@@ -86,7 +87,7 @@ class Scheduler:
                         continue
                     if self._last_push_date.get(api.name) == today:
                         continue
-                    # 这里只负责“到点了可以推”，真正是否记为已推送，
+                    # 这里只负责"到点了可以推"，真正是否记为已推送，
                     # 要等 _do_push 至少成功投递到一个目标后再写入 _last_push_date。
                     asyncio.create_task(self._do_push(api))
             except asyncio.CancelledError:
@@ -116,7 +117,7 @@ class Scheduler:
     async def _do_push(self, api: ApiConfig) -> None:
         """执行单个 API 的定时推送。
 
-        遍历 push_groups（群号）和 push_users（私聊 QQ 号），分别调用 OneBotSender 发送。
+        遍历 push_groups（群号）和 push_users（私聊 QQ 号），使用插件上下文的 send 能力发送。
 
         Args:
             api: 需要推送的 API 配置。
@@ -149,9 +150,9 @@ class Scheduler:
         for group_id in api.push_groups:
             try:
                 await deliver_fetch_result(
-                    sender=self._sender,
+                    ctx=self._ctx,
                     target_kind="group",
-                    target_id=int(group_id),
+                    target_id=group_id,
                     result=result,
                     render_fn=self._render_fn,
                 )
@@ -163,9 +164,9 @@ class Scheduler:
         for user_id in api.push_users:
             try:
                 await deliver_fetch_result(
-                    sender=self._sender,
+                    ctx=self._ctx,
                     target_kind="user",
-                    target_id=int(user_id),
+                    target_id=user_id,
                     result=result,
                     render_fn=self._render_fn,
                 )

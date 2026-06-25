@@ -80,20 +80,10 @@ class ApiConfig(PluginConfigBase):
         description="是否启用此 API（命令触发与定时推送均受此开关控制）。",
         json_schema_extra={"label": "启用", "order": 0},
     )
-    keywords: List[str] = Field(
-        default_factory=list,
-        description="触发关键词列表，必须以 / 开头，消息第一个词与关键词精确匹配时触发。",
-        json_schema_extra={
-            "hint": "所有关键词必须以 / 开头，例如 /60s。大小写不敏感。",
-            "label": "触发关键词",
-            "order": 1,
-            "placeholder": "例如：/60s",
-        },
-    )
     schedule_push: bool = Field(
         default=False,
         description="是否启用每日定时推送。",
-        json_schema_extra={"label": "定时推送", "order": 2},
+        json_schema_extra={"label": "定时推送", "order": 1},
     )
     push_time: str = Field(
         default="08:00",
@@ -101,8 +91,18 @@ class ApiConfig(PluginConfigBase):
         json_schema_extra={
             "hint": "格式必须为 HH:MM，例如 08:00 或 20:30。格式非法时定时推送将被禁用。",
             "label": "推送时间",
-            "order": 3,
+            "order": 2,
             "placeholder": "08:00",
+        },
+    )
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="触发关键词列表，必须以 / 开头，消息第一个词与关键词精确匹配时触发。",
+        json_schema_extra={
+            "hint": "所有关键词必须以 / 开头，例如 /60s。大小写不敏感。",
+            "label": "触发关键词",
+            "order": 4,
+            "placeholder": "例如：/60s",
         },
     )
     push_groups: List[str] = Field(
@@ -111,7 +111,7 @@ class ApiConfig(PluginConfigBase):
         json_schema_extra={
             "hint": "填写 QQ 号即可，例如 123456789。推送时会自动解析群号对应的聊天流。",
             "label": "推送目标群号",
-            "order": 4,
+            "order": 5,
             "placeholder": "例如：123456789",
         },
     )
@@ -122,7 +122,7 @@ class ApiConfig(PluginConfigBase):
         json_schema_extra={
             "hint": "填写 QQ 号即可，例如 123456789。",
             "label": "推送目标私聊 QQ 号",
-            "order": 5,
+            "order": 6,
             "placeholder": "例如：123456789",
         },
     )
@@ -187,59 +187,6 @@ class PluginSectionConfig(PluginConfigBase):
         return normalized_value or SUPPORTED_CONFIG_VERSION
 
 
-class MessageServerConfig(PluginConfigBase):
-    """OneBot HTTP 消息服务器配置。"""
-
-    __ui_label__: ClassVar[str] = "消息服务器"
-    __ui_icon__: ClassVar[str] = "server"
-    __ui_order__: ClassVar[int] = 1
-
-    host: str = Field(
-        default="http://127.0.0.1",
-        description="OneBot HTTP 服务地址，含协议前缀，例如 http://127.0.0.1。",
-        json_schema_extra={
-            "hint": "必须包含协议前缀，如 http:// 或 https://。",
-            "label": "服务地址",
-            "order": 0,
-            "placeholder": "http://127.0.0.1",
-        },
-    )
-    port: int = Field(
-        default=5700,
-        description="OneBot HTTP 服务端口。",
-        json_schema_extra={
-            "label": "端口",
-            "order": 1,
-            "step": 1,
-        },
-    )
-    token: str = Field(
-        default="",
-        description="access token，为空时不附加鉴权参数。",
-        json_schema_extra={
-            "hint": "对应 OneBot 配置中的 access_token，为空时不鉴权。",
-            "label": "Token",
-            "order": 2,
-            "placeholder": "留空表示不鉴权",
-        },
-    )
-
-    @field_validator("host", mode="before")
-    @classmethod
-    def _normalize_host(cls, value: Any) -> str:
-        return _normalize_string(value) or "http://127.0.0.1"
-
-    @field_validator("port", mode="before")
-    @classmethod
-    def _normalize_port(cls, value: Any) -> int:
-        return _normalize_positive_int(value, 5700)
-
-    @field_validator("token", mode="before")
-    @classmethod
-    def _normalize_token(cls, value: Any) -> str:
-        return _normalize_string(value)
-
-
 class FetchConfig(PluginConfigBase):
     """数据源拉取配置。"""
 
@@ -297,7 +244,7 @@ class DailyNewsApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "所有关键词必须以 / 开头，大小写不敏感。",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/60s",
         },
     )
@@ -312,7 +259,7 @@ class DailyNewsApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "选择 image 时推送每日封面图，选择 text 时推送文字新闻列表。",
             "label": "推送格式",
-            "order": 6,
+            "order": 3,
         },
     )
 
@@ -341,14 +288,14 @@ class GoldPriceApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "所有关键词必须以 / 开头，大小写不敏感。",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/gold_price",
         },
     )
     push_format: Literal["text", "image"] = Field(
         default="image",
         description="推送格式：text（文字列表）或 image（长图）。",
-        json_schema_extra={"label": "推送格式", "order": 6},
+        json_schema_extra={"label": "推送格式", "order": 3},
     )
 
     @field_validator("push_format", mode="before")
@@ -375,7 +322,7 @@ class GasPriceApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "发送命令时在关键词后加城市名，例如：/gas_price 北京",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/gas_price",
         },
     )
@@ -385,7 +332,7 @@ class GasPriceApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "选择 image 时推送渲染后的油价图片，选择 text 时推送文字表格。",
             "label": "推送格式",
-            "order": 6,
+            "order": 3,
         },
     )
 
@@ -414,14 +361,14 @@ class AiNewsApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "支持可选日期参数 YYYY-MM-DD，也支持 all 参数请求全部日期。",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/ai_news",
         },
     )
     push_format: Literal["text", "image"] = Field(
         default="image",
         description="推送格式：text（文字列表）或 image（长图）。",
-        json_schema_extra={"label": "推送格式", "order": 6},
+        json_schema_extra={"label": "推送格式", "order": 3},
     )
 
     @field_validator("push_format", mode="before")
@@ -448,14 +395,14 @@ class TodayInHistoryApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "支持可选日期参数 YYYY-MM-DD，不填则按接口默认返回当天数据。",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/today_history",
         },
     )
     push_format: Literal["text", "image"] = Field(
         default="image",
         description="推送格式：text（文字列表）或 image（长图）。",
-        json_schema_extra={"label": "推送格式", "order": 6},
+        json_schema_extra={"label": "推送格式", "order": 3},
     )
 
     @field_validator("push_format", mode="before")
@@ -482,14 +429,14 @@ class ItNewsApiConfig(ApiConfig):
         json_schema_extra={
             "hint": "支持可选条数参数，范围 1-50，不填时使用接口默认值。",
             "label": "触发关键词",
-            "order": 1,
+            "order": 4,
             "placeholder": "例如：/it_news",
         },
     )
     push_format: Literal["text", "image"] = Field(
         default="image",
         description="推送格式：text（文字列表）或 image（长图）。",
-        json_schema_extra={"label": "推送格式", "order": 6},
+        json_schema_extra={"label": "推送格式", "order": 3},
     )
 
     @field_validator("push_format", mode="before")
@@ -503,7 +450,6 @@ class Daily60sPluginConfig(PluginConfigBase):
     """每日速读插件完整配置。"""
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
-    message_server: MessageServerConfig = Field(default_factory=MessageServerConfig)
     fetch: FetchConfig = Field(default_factory=FetchConfig)
     daily_news: DailyNewsApiConfig = Field(default_factory=DailyNewsApiConfig)
     gold_price: GoldPriceApiConfig = Field(default_factory=GoldPriceApiConfig)

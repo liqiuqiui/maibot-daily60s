@@ -11,7 +11,6 @@ from .config import ApiConfig, Daily60sPluginConfig
 from .delivery import deliver_fetch_result
 from .fetcher import API_REGISTRY, CommandUsageError, Fetcher, build_api_request_params, build_command_usage
 from .scheduler import Scheduler
-from .sender import OneBotSender
 
 
 class Daily60sPlugin(MaiBotPlugin):
@@ -24,22 +23,14 @@ class Daily60sPlugin(MaiBotPlugin):
         super().__init__()
         self._fetcher: Optional[Fetcher] = None
         self._scheduler: Optional[Scheduler] = None
-        self._sender: Optional[OneBotSender] = None
         self._render_fn = None
 
     async def on_load(self) -> None:
-        """加载插件：初始化 Fetcher、OneBotSender 和 Scheduler，启动调度循环。"""
+        """加载插件：初始化 Fetcher 和 Scheduler，启动调度循环。"""
         cfg = cast(Daily60sPluginConfig, self.config)
         self.ctx.logger.warning("Daily60sPlugin init")
 
         self._fetcher = Fetcher(logger=self.ctx.logger, timeout=cfg.fetch.timeout)
-        self._sender = OneBotSender(
-            logger=self.ctx.logger,
-            host=cfg.message_server.host,
-            port=cfg.message_server.port,
-            token=cfg.message_server.token,
-            timeout=cfg.fetch.timeout,
-        )
 
         # 图片类内容统一先产出 HTML，再由插件上下文负责截图成 PNG。
         # 这里把渲染器闭包保存下来，命令触发和定时推送都复用同一条链路。
@@ -50,9 +41,9 @@ class Daily60sPlugin(MaiBotPlugin):
         self._render_fn = _render_fn
         self._scheduler = Scheduler(
             logger=self.ctx.logger,
+            ctx=self.ctx,
             config=cfg,
             fetcher=self._fetcher,
-            sender=self._sender,
             render_fn=_render_fn,
         )
         self._scheduler.start()
@@ -64,7 +55,6 @@ class Daily60sPlugin(MaiBotPlugin):
             await self._scheduler.stop()
             self._scheduler = None
         self._fetcher = None
-        self._sender = None
         self._render_fn = None
         self.ctx.logger.info("每日速读插件已卸载")
 
@@ -143,7 +133,7 @@ class Daily60sPlugin(MaiBotPlugin):
         if getattr(self, "_ctx", None) is not None:
             self.ctx.logger.info("daily60s 当前配置：%s", cfg.model_dump_json(indent=2))
 
-        # 配置层仍然保持“一 API 一配置块”，但运行时只按统一 apis 列表扫描，
+        # 配置层仍然保持"一 API 一配置块"，但运行时只按统一 apis 列表扫描，
         # 这样新增模块时不用改命令路由骨架。
         matched_api: Optional[ApiConfig] = None
         for api in cfg.apis:
@@ -159,7 +149,7 @@ class Daily60sPlugin(MaiBotPlugin):
         if matched_api is None:
             return None
 
-        if self._fetcher is None or self._sender is None:
+        if self._fetcher is None:
             if getattr(self, "_ctx", None) is not None:
                 self.ctx.logger.error("插件尚未初始化，无法处理关键词触发请求")
             return None
@@ -176,10 +166,11 @@ class Daily60sPlugin(MaiBotPlugin):
             params = build_api_request_params(definition, arg_tokens)
         except CommandUsageError:
             usage = build_command_usage(parts[0], definition)
+            # 使用 ctx.send 发送用法提示
             if msg_type == "private":
-                await self._sender.send_user(int(user_id), usage)
+                await self.ctx.send.text(text=usage, stream_id=user_id)
             elif msg_type == "group":
-                await self._sender.send_group(int(group_id), usage)
+                await self.ctx.send.text(text=usage, stream_id=group_id)
             return None
 
         push_format = getattr(matched_api, "push_format", "text")
@@ -196,26 +187,26 @@ class Daily60sPlugin(MaiBotPlugin):
             # 3. 图片按 group/user 分流
             if msg_type == "private":
                 await deliver_fetch_result(
-                    sender=self._sender,
+                    ctx=self.ctx,
                     target_kind="user",
-                    target_id=int(user_id),
+                    target_id=user_id,
                     result=result,
                     render_fn=self._render_fn,
                 )
             elif msg_type == "group":
                 await deliver_fetch_result(
-                    sender=self._sender,
+                    ctx=self.ctx,
                     target_kind="group",
-                    target_id=int(group_id),
+                    target_id=group_id,
                     result=result,
                     render_fn=self._render_fn,
                 )
         except Exception:
             self.ctx.logger.exception("拉取 API '%s' 失败", matched_api.name)
             if msg_type == "private":
-                await self._sender.send_user(int(user_id), "内容获取失败，请稍后重试")
+                await self.ctx.send.text(text="内容获取失败，请稍后重试", stream_id=user_id)
             else:
-                await self._sender.send_group(int(group_id), "内容获取失败，请稍后重试")
+                await self.ctx.send.text(text="内容获取失败，请稍后重试", stream_id=group_id)
 
         return {"action": "abort"}
 
