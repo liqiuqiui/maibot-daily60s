@@ -14,7 +14,25 @@ from .delivery import RenderFn, deliver_fetch_result
 from .fetcher import API_REGISTRY, Fetcher
 
 # 调度循环检查间隔（秒）
-_CHECK_INTERVAL_SEC = 60
+_CHECK_INTERVAL_SEC = 10
+
+
+def _normalize_time(time_str: str) -> str:
+    """规范化时间字符串为 HH:MM 格式。
+
+    Args:
+        time_str: 时间字符串，可能不是标准的两位格式。
+
+    Returns:
+        str: 标准化的 HH:MM 格式时间字符串。
+    """
+    try:
+        # 解析时间，然后重新格式化为标准格式
+        dt = datetime.strptime(time_str, "%H:%M")
+        return dt.strftime("%H:%M")
+    except ValueError:
+        # 如果解析失败，返回原字符串
+        return time_str
 
 
 class Scheduler:
@@ -47,6 +65,8 @@ class Scheduler:
         self._task: asyncio.Task[None] | None = None
         # 记录每个 API 当天是否已推送，键为 api_name，值为最后推送日期 YYYY-MM-DD
         self._last_push_date: dict[str, str] = {}
+        # 记录每个 API 是否正在推送中，避免重复触发
+        self._pushing: dict[str, bool] = {}
 
     def start(self) -> None:
         """启动定时调度后台任务。"""
@@ -83,9 +103,17 @@ class Scheduler:
                 for api in self._config.apis:
                     if not api.enabled or not api.schedule_push:
                         continue
-                    if current_time != api.push_time:
+                    # 规范化推送时间，确保格式一致
+                    push_time = _normalize_time(api.push_time)
+                    # 只有当前时间小于推送时间时才跳过，否则执行推送
+                    # 这样即使错过了精确的推送时间，也能在后续检查中触发
+                    if current_time < push_time:
                         continue
                     if self._last_push_date.get(api.name) == today:
+                        continue
+                    # 检查是否正在推送中，避免重复触发
+                    if self._pushing.get(api.name, False):
+                        self._logger.debug("API '%s' 正在推送中，跳过本次调度", api.name)
                         continue
                     # 这里只负责"到点了可以推"，真正是否记为已推送，
                     # 要等 _do_push 至少成功投递到一个目标后再写入 _last_push_date。
@@ -122,6 +150,11 @@ class Scheduler:
         Args:
             api: 需要推送的 API 配置。
         """
+        # 检查是否正在推送中，避免重复触发
+        if self._pushing.get(api.name, False):
+            self._logger.debug("API '%s' 正在推送中，跳过本次推送", api.name)
+            return
+
         if not api.push_groups and not api.push_users:
             self._logger.info("API '%s' 的 push_groups 和 push_users 均为空，跳过定时推送", api.name)
             return
@@ -130,48 +163,56 @@ class Scheduler:
             self._logger.error("API '%s' 不在 API_REGISTRY 中，无法推送", api.name)
             return
 
+        # 设置推送状态
+        self._pushing[api.name] = True
         self._logger.info("开始定时推送 API '%s'", api.name)
-        push_format = getattr(api, "push_format", "text")
+
         try:
+            push_format = getattr(api, "push_format", "text")
             result = await self._fetcher.fetch(
                 api_name=api.name,
                 base_urls=self._config.fetch.base_urls,
                 push_format=push_format,
             )
+
+            # 只要任意一个群/用户发送成功，就视为本轮推送完成，避免重复轰炸。
+            # 如果全部失败，则不写去重标记，让下一轮仍有机会重试。
+            delivered = False
+
+            # 推送至各个群
+            for group_id in api.push_groups:
+                try:
+                    await deliver_fetch_result(
+                        ctx=self._ctx,
+                        target_kind="group",
+                        target_id=group_id,
+                        result=result,
+                        render_fn=self._render_fn,
+                    )
+                    delivered = True
+                except Exception:
+                    self._logger.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
+
+            # 推送至各个私聊用户
+            for user_id in api.push_users:
+                try:
+                    await deliver_fetch_result(
+                        ctx=self._ctx,
+                        target_kind="user",
+                        target_id=user_id,
+                        result=result,
+                        render_fn=self._render_fn,
+                    )
+                    delivered = True
+                except Exception:
+                    self._logger.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)
+
+            if delivered:
+                self._last_push_date[api.name] = datetime.now().strftime("%Y-%m-%d")
+
         except Exception:
-            self._logger.exception("定时推送拉取 API '%s' 失败，跳过", api.name)
-            return
-
-        # 只要任意一个群/用户发送成功，就视为本轮推送完成，避免重复轰炸。
-        # 如果全部失败，则不写去重标记，让下一轮仍有机会重试。
-        delivered = False
-
-        # 推送至各个群
-        for group_id in api.push_groups:
-            try:
-                await deliver_fetch_result(
-                    ctx=self._ctx,
-                    target_kind="group",
-                    target_id=group_id,
-                    result=result,
-                    render_fn=self._render_fn,
-                )
-                delivered = True
-            except Exception:
-                self._logger.warning("向群 '%s' 推送 API '%s' 失败", group_id, api.name, exc_info=True)
-
-        # 推送至各个私聊用户
-        for user_id in api.push_users:
-            try:
-                await deliver_fetch_result(
-                    ctx=self._ctx,
-                    target_kind="user",
-                    target_id=user_id,
-                    result=result,
-                    render_fn=self._render_fn,
-                )
-                delivered = True
-            except Exception:
-                self._logger.warning("向用户 '%s' 推送 API '%s' 失败", user_id, api.name, exc_info=True)
-        if delivered:
-            self._last_push_date[api.name] = datetime.now().strftime("%Y-%m-%d")
+            self._logger.exception("定时推送 API '%s' 失败", api.name)
+        finally:
+            # 清除推送状态
+            self._pushing[api.name] = False
+            self._logger.debug("API '%s' 推送完成，状态已重置", api.name)

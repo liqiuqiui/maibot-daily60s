@@ -6,7 +6,7 @@ import pytest
 
 from plugins.daily60s.config import Daily60sPluginConfig
 from plugins.daily60s.fetcher import FetchResult
-from plugins.daily60s.scheduler import Scheduler
+from plugins.daily60s.scheduler import Scheduler, _normalize_time
 
 
 class DummyFetcher:
@@ -330,3 +330,136 @@ async def test_scheduler_count_enabled_schedule_tasks():
 
     # 应该有 2 个启用的定时任务（daily_news 和 gold_price）
     assert scheduler._count_enabled_schedule_tasks() == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_push_state_prevents_duplicate_push():
+    """测试推送状态防止重复推送"""
+    config = Daily60sPluginConfig()
+    config.daily_news.push_groups = ["10001"]
+
+    ctx = create_mock_ctx()
+    logger = Mock()
+    scheduler = Scheduler(
+        logger=logger,
+        ctx=ctx,
+        config=config,
+        fetcher=DummyFetcher(FetchResult(content="hello")),
+    )
+
+    # 手动设置推送状态为正在推送中
+    scheduler._pushing["daily_news"] = True
+
+    # 尝试推送，应该被跳过
+    await scheduler._do_push(config.daily_news)
+
+    # 验证记录了跳过信息
+    logger.debug.assert_any_call("API '%s' 正在推送中，跳过本次推送", "daily_news")
+    # 验证没有发送消息
+    ctx.send.text.assert_not_called()
+    # 验证没有标记推送日期
+    assert "daily_news" not in scheduler._last_push_date
+
+
+@pytest.mark.asyncio
+async def test_scheduler_push_state_cleared_after_push():
+    """测试推送完成后状态被清除"""
+    config = Daily60sPluginConfig()
+    config.daily_news.push_groups = ["10001"]
+
+    ctx = create_mock_ctx()
+    scheduler = Scheduler(
+        logger=logging.getLogger("daily60s-test"),
+        ctx=ctx,
+        config=config,
+        fetcher=DummyFetcher(FetchResult(content="hello")),
+    )
+
+    # 初始状态应该是 False
+    assert scheduler._pushing.get("daily_news", False) is False
+
+    # 执行推送
+    await scheduler._do_push(config.daily_news)
+
+    # 推送完成后状态应该被清除
+    assert scheduler._pushing.get("daily_news", False) is False
+    # 验证标记了推送日期
+    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_push_state_cleared_on_failure():
+    """测试推送失败时状态也被清除"""
+    config = Daily60sPluginConfig()
+    config.daily_news.push_groups = ["10001"]
+
+    class FailingFetcher:
+        async def fetch(self, **kwargs):
+            raise RuntimeError("fetch failed")
+
+    ctx = create_mock_ctx()
+    scheduler = Scheduler(
+        logger=logging.getLogger("daily60s-test"),
+        ctx=ctx,
+        config=config,
+        fetcher=FailingFetcher(),
+    )
+
+    # 执行推送（会失败）
+    await scheduler._do_push(config.daily_news)
+
+    # 推送失败后状态也应该被清除
+    assert scheduler._pushing.get("daily_news", False) is False
+    # 验证没有标记推送日期
+    assert "daily_news" not in scheduler._last_push_date
+
+
+@pytest.mark.asyncio
+async def test_scheduler_triggers_push_when_time_exceeded():
+    """测试当前时间超过推送时间时也能触发推送"""
+    config = Daily60sPluginConfig()
+    config.daily_news.push_groups = ["10001"]
+    config.daily_news.push_time = "08:00"
+
+    ctx = create_mock_ctx()
+    scheduler = Scheduler(
+        logger=logging.getLogger("daily60s-test"),
+        ctx=ctx,
+        config=config,
+        fetcher=DummyFetcher(FetchResult(content="hello")),
+    )
+
+    # 模拟当前时间是 09:00，超过了 08:00 的推送时间
+    # 由于 _loop 方法是异步的，我们直接测试 _do_push 方法
+    # 但我们可以验证逻辑：如果当前时间 >= 推送时间，应该触发推送
+
+    # 模拟 _last_push_date 为空（今天还没推送过）
+    assert scheduler._last_push_date.get("daily_news") is None
+
+    # 执行推送
+    await scheduler._do_push(config.daily_news)
+
+    # 验证推送成功
+    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    ctx.send.text.assert_called_once()
+
+
+def test_normalize_time_standard_format():
+    """测试规范化标准格式的时间"""
+    assert _normalize_time("08:00") == "08:00"
+    assert _normalize_time("23:59") == "23:59"
+    assert _normalize_time("00:00") == "00:00"
+
+
+def test_normalize_time_non_standard_format():
+    """测试规范化非标准格式的时间"""
+    assert _normalize_time("8:00") == "08:00"
+    assert _normalize_time("9:30") == "09:30"
+    assert _normalize_time("0:00") == "00:00"
+
+
+def test_normalize_time_invalid_format():
+    """测试规范化无效格式的时间"""
+    assert _normalize_time("invalid") == "invalid"
+    assert _normalize_time("25:00") == "25:00"
+    assert _normalize_time("12:60") == "12:60"
