@@ -68,7 +68,7 @@ async def test_handle_menu_command_sends_enabled_api_menu():
     assert len(fake_context.send.text_calls) == 1
     menu_text, stream_id = fake_context.send.text_calls[0]
     assert stream_id == "stream-123"
-    assert "每日速读菜单" in menu_text
+    assert "每日信息速递菜单" in menu_text
     assert "/60s" in menu_text
     assert "/ai_news [YYYY-MM-DD] [all]" in menu_text
     assert "/gas_price" not in menu_text
@@ -97,5 +97,5 @@ async def test_handle_menu_command_respects_plugin_enabled_switch():
 
     result = await plugin.handle_menu(stream_id="stream-123")
 
-    assert result == (False, "每日速读插件未启用", False)
+    assert result == (False, "每日信息速递未启用", False)
     assert fake_context.send.text_calls == []

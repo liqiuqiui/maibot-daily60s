@@ -1,4 +1,4 @@
-"""每日速读插件配置模型。"""
+"""每日信息速递插件配置模型。"""
 
 from __future__ import annotations
 
@@ -447,7 +447,7 @@ class ItNewsApiConfig(ApiConfig):
 
 
 class Daily60sPluginConfig(PluginConfigBase):
-    """每日速读插件完整配置。"""
+    """每日信息速递插件完整配置。"""
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     fetch: FetchConfig = Field(default_factory=FetchConfig)

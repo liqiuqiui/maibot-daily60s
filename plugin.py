@@ -1,4 +1,4 @@
-"""每日速读插件 — 插件入口，组装 Fetcher、Scheduler 与消息处理器。"""
+"""每日信息速递插件 — 插件入口，组装 Fetcher、Scheduler 与消息处理器。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .scheduler import Scheduler
 def _build_menu_text(cfg: Daily60sPluginConfig) -> str:
     """根据当前启用的 API 配置生成帮助菜单。"""
     lines = [
-        "每日速读菜单",
+        "每日信息速递菜单",
         "",
         "可用命令：",
     ]
@@ -56,7 +56,7 @@ def _build_menu_text(cfg: Daily60sPluginConfig) -> str:
 
 
 class Daily60sPlugin(MaiBotPlugin):
-    """每日速读插件：多 API 配置、关键词触发、每 API 独立定时推送。"""
+    """每日信息速递插件：多 API 配置、关键词触发、每 API 独立定时推送。"""
 
     config_model: ClassVar[type[PluginConfigBase] | None] = Daily60sPluginConfig
 
@@ -89,7 +89,7 @@ class Daily60sPlugin(MaiBotPlugin):
             render_fn=_render_fn,
         )
         self._scheduler.start()
-        self.ctx.logger.info("每日速读插件已加载，共 %d 个 API", len(cfg.apis))
+        self.ctx.logger.info("每日信息速递已加载，共 %d 个 API", len(cfg.apis))
 
     async def on_unload(self) -> None:
         """卸载插件：停止调度循环并清理运行时组件。"""
@@ -98,7 +98,7 @@ class Daily60sPlugin(MaiBotPlugin):
             self._scheduler = None
         self._fetcher = None
         self._render_fn = None
-        self.ctx.logger.info("每日速读插件已卸载")
+        self.ctx.logger.info("每日信息速递已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
         """配置更新后重载运行时组件。
@@ -113,7 +113,7 @@ class Daily60sPlugin(MaiBotPlugin):
 
         self.set_plugin_config(config_data)
         if version:
-            self.ctx.logger.debug("每日速读插件收到配置更新通知：%s", version)
+            self.ctx.logger.debug("每日信息速递收到配置更新通知：%s", version)
 
         # 重建 Fetcher 和 Scheduler 以使新配置生效
         await self.on_unload()
@@ -121,16 +121,16 @@ class Daily60sPlugin(MaiBotPlugin):
 
     @Command(
         "daily60s_menu",
-        description="查看每日速读插件菜单",
+        description="查看每日信息速递菜单",
         pattern=r"^/(menu|help|菜单|帮助)$",
     )
     async def handle_menu(self, stream_id: str = "", **kwargs: Any):
-        """发送每日速读插件帮助菜单。"""
+        """发送每日信息速递帮助菜单。"""
         del kwargs
 
         cfg = cast(Daily60sPluginConfig, self.config)
         if not cfg.plugin.enabled:
-            return False, "每日速读插件未启用", False
+            return False, "每日信息速递未启用", False
 
         await self.ctx.send.text(text=_build_menu_text(cfg), stream_id=stream_id)
         return True, "菜单已发送", True
@@ -267,7 +267,7 @@ class Daily60sPlugin(MaiBotPlugin):
 
 
 def create_plugin() -> Daily60sPlugin:
-    """创建每日速读插件实例。
+    """创建每日信息速递插件实例。
 
     Returns:
         Daily60sPlugin: 插件实例。
