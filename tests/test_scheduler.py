@@ -1,44 +1,108 @@
 import logging
 from datetime import datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from maibot_sdk.context import PluginContext
 
-from plugins.daily60s.config import Daily60sPluginConfig
-from plugins.daily60s.fetcher import FetchResult
+from plugins.daily60s.config import ApiConfig, Daily60sPluginConfig
+from plugins.daily60s.fetcher import Fetcher, FetchResult
 from plugins.daily60s.scheduler import Scheduler, _normalize_time
 
 
-class DummyFetcher:
-    def __init__(self, result: FetchResult):
+class DummyFetcher(Fetcher):
+    def __init__(self, result: FetchResult) -> None:
         self.result = result
 
-    async def fetch(self, **kwargs):
+    async def fetch(
+        self,
+        api_name: str,
+        base_urls: list[str],
+        params: dict[str, str] | None = None,
+        push_format: str = "text",
+    ) -> FetchResult:
+        del api_name, base_urls, params, push_format
         return self.result
 
 
-def create_mock_ctx(should_fail: bool = False):
+class FailingFetcher(Fetcher):
+    def __init__(self) -> None:
+        pass
+
+    async def fetch(
+        self,
+        api_name: str,
+        base_urls: list[str],
+        params: dict[str, str] | None = None,
+        push_format: str = "text",
+    ) -> FetchResult:
+        del api_name, base_urls, params, push_format
+        raise RuntimeError("fetch failed")
+
+
+class _FakeChat:
+    def __init__(self, should_fail: bool) -> None:
+        if should_fail:
+            self.get_stream_by_group_id: Any = AsyncMock(side_effect=RuntimeError("get stream failed"))
+            self.get_stream_by_user_id: Any = AsyncMock(side_effect=RuntimeError("get stream failed"))
+        else:
+            self.get_stream_by_group_id = AsyncMock(return_value={"stream_id": "group_10001"})
+            self.get_stream_by_user_id = AsyncMock(return_value={"stream_id": "user_10001"})
+
+
+class _FakeSend:
+    def __init__(self, should_fail: bool) -> None:
+        if should_fail:
+            self.text: Any = AsyncMock(side_effect=RuntimeError("send text failed"))
+            self.image: Any = AsyncMock(side_effect=RuntimeError("send image failed"))
+        else:
+            self.text = AsyncMock(return_value=True)
+            self.image = AsyncMock(return_value=True)
+
+
+class _FakeContext:
+    def __init__(self, should_fail: bool = False) -> None:
+        self.logger = logging.getLogger("daily60s-test-ctx")
+        self.chat = _FakeChat(should_fail)
+        self.send = _FakeSend(should_fail)
+
+
+def create_mock_ctx(should_fail: bool = False) -> _FakeContext:
     """创建模拟的 PluginContext"""
-    ctx = Mock()
-    ctx.logger = logging.getLogger("daily60s-test-ctx")
+    return _FakeContext(should_fail)
 
-    # 模拟 chat.get_stream_by_group_id 和 get_stream_by_user_id
-    if should_fail:
-        ctx.chat.get_stream_by_group_id = AsyncMock(side_effect=RuntimeError("get stream failed"))
-        ctx.chat.get_stream_by_user_id = AsyncMock(side_effect=RuntimeError("get stream failed"))
-    else:
-        ctx.chat.get_stream_by_group_id = AsyncMock(return_value={"stream_id": "group_10001"})
-        ctx.chat.get_stream_by_user_id = AsyncMock(return_value={"stream_id": "user_10001"})
 
-    # 模拟 send.text 和 send.image
-    if should_fail:
-        ctx.send.text = AsyncMock(side_effect=RuntimeError("send text failed"))
-        ctx.send.image = AsyncMock(side_effect=RuntimeError("send image failed"))
-    else:
-        ctx.send.text = AsyncMock(return_value=True)
-        ctx.send.image = AsyncMock(return_value=True)
+def as_plugin_context(ctx: _FakeContext) -> PluginContext:
+    return cast(PluginContext, ctx)
 
-    return ctx
+
+def as_logger(logger: Mock) -> logging.Logger:
+    return cast(logging.Logger, logger)
+
+
+async def do_push(scheduler: Scheduler, api: ApiConfig) -> None:
+    await cast(Any, scheduler)._do_push(api)
+
+
+def validate_push_times(scheduler: Scheduler) -> None:
+    cast(Any, scheduler)._validate_push_times()
+
+
+def count_enabled_schedule_tasks(scheduler: Scheduler) -> int:
+    return cast(Any, scheduler)._count_enabled_schedule_tasks()
+
+
+def last_push_date(scheduler: Scheduler, api_name: str) -> str | None:
+    return cast(Any, scheduler)._last_push_date.get(api_name)
+
+
+def is_pushing(scheduler: Scheduler, api_name: str) -> bool:
+    return bool(cast(Any, scheduler)._pushing.get(api_name, False))
+
+
+def set_pushing(scheduler: Scheduler, api_name: str, pushing: bool) -> None:
+    cast(Any, scheduler)._pushing[api_name] = pushing
 
 
 @pytest.mark.asyncio
@@ -49,14 +113,14 @@ async def test_scheduler_marks_last_push_date_after_successful_push():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     # 验证调用了 send.text
     ctx.send.text.assert_called_once()
 
@@ -69,14 +133,14 @@ async def test_scheduler_does_not_mark_last_push_date_when_delivery_fails():
     ctx = create_mock_ctx(should_fail=True)
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
-    assert "daily_news" not in scheduler._last_push_date
+    assert last_push_date(scheduler, "daily_news") is None
 
 
 @pytest.mark.asyncio
@@ -91,8 +155,8 @@ async def test_scheduler_start_logs_enabled_schedule_count():
     logger = Mock()
     ctx = create_mock_ctx()
     scheduler = Scheduler(
-        logger=logger,
-        ctx=ctx,
+        logger=as_logger(logger),
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
@@ -113,13 +177,13 @@ async def test_scheduler_do_push_with_empty_groups_and_users():
     ctx = create_mock_ctx()
     logger = Mock()
     scheduler = Scheduler(
-        logger=logger,
-        ctx=ctx,
+        logger=as_logger(logger),
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证记录了跳过信息
     logger.info.assert_any_call("API '%s' 的 push_groups 和 push_users 均为空，跳过定时推送", "daily_news")
@@ -127,7 +191,7 @@ async def test_scheduler_do_push_with_empty_groups_and_users():
     ctx.send.text.assert_not_called()
     ctx.send.image.assert_not_called()
     # 验证没有标记推送日期
-    assert "daily_news" not in scheduler._last_push_date
+    assert last_push_date(scheduler, "daily_news") is None
 
 
 @pytest.mark.asyncio
@@ -136,27 +200,23 @@ async def test_scheduler_do_push_with_fetch_failure():
     config = Daily60sPluginConfig()
     config.daily_news.push_groups = ["10001"]
 
-    class FailingFetcher:
-        async def fetch(self, **kwargs):
-            raise RuntimeError("fetch failed")
-
     ctx = create_mock_ctx()
     logger = Mock()
     scheduler = Scheduler(
-        logger=logger,
-        ctx=ctx,
+        logger=as_logger(logger),
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=FailingFetcher(),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证记录了拉取失败
     logger.exception.assert_called_once()
     # 验证没有发送消息
     ctx.send.text.assert_not_called()
     # 验证没有标记推送日期
-    assert "daily_news" not in scheduler._last_push_date
+    assert last_push_date(scheduler, "daily_news") is None
 
 
 @pytest.mark.asyncio
@@ -169,15 +229,15 @@ async def test_scheduler_do_push_with_image_result():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="image_data", is_image=True)),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证标记了推送日期
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     # 验证发送了图片
     ctx.send.image.assert_called_once()
 
@@ -191,15 +251,15 @@ async def test_scheduler_do_push_to_multiple_groups():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证标记了推送日期
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     # 验证发送了 3 次
     assert ctx.send.text.call_count == 3
 
@@ -213,15 +273,15 @@ async def test_scheduler_do_push_to_multiple_users():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证标记了推送日期
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     # 验证发送了 2 次
     assert ctx.send.text.call_count == 2
 
@@ -236,15 +296,15 @@ async def test_scheduler_do_push_to_groups_and_users():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证标记了推送日期
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     # 验证发送了 2 次（1 个群 + 1 个用户）
     assert ctx.send.text.call_count == 2
 
@@ -257,7 +317,6 @@ async def test_scheduler_do_push_partial_failure():
 
     # 第一个群成功，第二个群失败
     call_count = 0
-    original_send_text = AsyncMock(return_value=True)
 
     async def mock_send_text(*args, **kwargs):
         nonlocal call_count
@@ -267,19 +326,19 @@ async def test_scheduler_do_push_partial_failure():
         return True
 
     ctx = create_mock_ctx()
-    ctx.send.text = mock_send_text
+    cast(Any, ctx.send).text = mock_send_text
 
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证标记了推送日期（因为第一个群成功了）
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
 
 
 @pytest.mark.asyncio
@@ -294,13 +353,13 @@ async def test_scheduler_validate_push_times():
     logger = Mock()
     ctx = create_mock_ctx()
     scheduler = Scheduler(
-        logger=logger,
-        ctx=ctx,
+        logger=as_logger(logger),
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
-    scheduler._validate_push_times()
+    validate_push_times(scheduler)
 
     # 验证记录了无效时间的错误
     logger.error.assert_called_once()
@@ -323,13 +382,13 @@ async def test_scheduler_count_enabled_schedule_tasks():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
     # 应该有 2 个启用的定时任务（daily_news 和 gold_price）
-    assert scheduler._count_enabled_schedule_tasks() == 2
+    assert count_enabled_schedule_tasks(scheduler) == 2
 
 
 @pytest.mark.asyncio
@@ -341,24 +400,24 @@ async def test_scheduler_push_state_prevents_duplicate_push():
     ctx = create_mock_ctx()
     logger = Mock()
     scheduler = Scheduler(
-        logger=logger,
-        ctx=ctx,
+        logger=as_logger(logger),
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
     # 手动设置推送状态为正在推送中
-    scheduler._pushing["daily_news"] = True
+    set_pushing(scheduler, "daily_news", True)
 
     # 尝试推送，应该被跳过
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证记录了跳过信息
     logger.debug.assert_any_call("API '%s' 正在推送中，跳过本次推送", "daily_news")
     # 验证没有发送消息
     ctx.send.text.assert_not_called()
     # 验证没有标记推送日期
-    assert "daily_news" not in scheduler._last_push_date
+    assert last_push_date(scheduler, "daily_news") is None
 
 
 @pytest.mark.asyncio
@@ -370,21 +429,21 @@ async def test_scheduler_push_state_cleared_after_push():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
 
     # 初始状态应该是 False
-    assert scheduler._pushing.get("daily_news", False) is False
+    assert is_pushing(scheduler, "daily_news") is False
 
     # 执行推送
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 推送完成后状态应该被清除
-    assert scheduler._pushing.get("daily_news", False) is False
+    assert is_pushing(scheduler, "daily_news") is False
     # 验证标记了推送日期
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
 
 
 @pytest.mark.asyncio
@@ -393,25 +452,21 @@ async def test_scheduler_push_state_cleared_on_failure():
     config = Daily60sPluginConfig()
     config.daily_news.push_groups = ["10001"]
 
-    class FailingFetcher:
-        async def fetch(self, **kwargs):
-            raise RuntimeError("fetch failed")
-
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=FailingFetcher(),
     )
 
     # 执行推送（会失败）
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 推送失败后状态也应该被清除
-    assert scheduler._pushing.get("daily_news", False) is False
+    assert is_pushing(scheduler, "daily_news") is False
     # 验证没有标记推送日期
-    assert "daily_news" not in scheduler._last_push_date
+    assert last_push_date(scheduler, "daily_news") is None
 
 
 @pytest.mark.asyncio
@@ -424,7 +479,7 @@ async def test_scheduler_triggers_push_when_time_exceeded():
     ctx = create_mock_ctx()
     scheduler = Scheduler(
         logger=logging.getLogger("daily60s-test"),
-        ctx=ctx,
+        ctx=as_plugin_context(ctx),
         config=config,
         fetcher=DummyFetcher(FetchResult(content="hello")),
     )
@@ -434,13 +489,13 @@ async def test_scheduler_triggers_push_when_time_exceeded():
     # 但我们可以验证逻辑：如果当前时间 >= 推送时间，应该触发推送
 
     # 模拟 _last_push_date 为空（今天还没推送过）
-    assert scheduler._last_push_date.get("daily_news") is None
+    assert last_push_date(scheduler, "daily_news") is None
 
     # 执行推送
-    await scheduler._do_push(config.daily_news)
+    await do_push(scheduler, config.daily_news)
 
     # 验证推送成功
-    assert scheduler._last_push_date["daily_news"] == datetime.now().strftime("%Y-%m-%d")
+    assert last_push_date(scheduler, "daily_news") == datetime.now().strftime("%Y-%m-%d")
     ctx.send.text.assert_called_once()
 
 
