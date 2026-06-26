@@ -4,13 +4,55 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Optional, cast
 
-from maibot_sdk import HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, PluginConfigBase
 from maibot_sdk.types import HookMode
 
 from .config import ApiConfig, Daily60sPluginConfig
 from .delivery import deliver_fetch_result
 from .fetcher import API_REGISTRY, CommandUsageError, Fetcher, build_api_request_params, build_command_usage
 from .scheduler import Scheduler
+
+
+def _build_menu_text(cfg: Daily60sPluginConfig) -> str:
+    """根据当前启用的 API 配置生成帮助菜单。"""
+    lines = [
+        "每日速读菜单",
+        "",
+        "可用命令：",
+    ]
+
+    enabled_api_count = 0
+    for api in cfg.apis:
+        if not api.enabled:
+            continue
+
+        definition = API_REGISTRY.get(api.name)
+        if definition is None:
+            continue
+
+        keywords = [keyword for keyword in api.keywords if keyword]
+        if not keywords:
+            continue
+
+        enabled_api_count += 1
+        command = keywords[0]
+        if definition.usage:
+            command = f"{command} {definition.usage}"
+
+        aliases = keywords[1:]
+        alias_text = f"（别名：{'、'.join(aliases)}）" if aliases else ""
+        lines.append(f"- {command}{alias_text}")
+
+    if enabled_api_count == 0:
+        lines.append("- 当前没有启用的 API 命令")
+
+    lines.extend(
+        [
+            "",
+            "帮助命令：/menu、/help、/菜单、/帮助",
+        ]
+    )
+    return "\n".join(lines)
 
 
 class Daily60sPlugin(MaiBotPlugin):
@@ -77,6 +119,22 @@ class Daily60sPlugin(MaiBotPlugin):
         await self.on_unload()
         await self.on_load()
 
+    @Command(
+        "daily60s_menu",
+        description="查看每日速读插件菜单",
+        pattern=r"^/(menu|help|菜单|帮助)$",
+    )
+    async def handle_menu(self, stream_id: str = "", **kwargs: Any):
+        """发送每日速读插件帮助菜单。"""
+        del kwargs
+
+        cfg = cast(Daily60sPluginConfig, self.config)
+        if not cfg.plugin.enabled:
+            return False, "每日速读插件未启用", False
+
+        await self.ctx.send.text(text=_build_menu_text(cfg), stream_id=stream_id)
+        return True, "菜单已发送", True
+
     @HookHandler(
         hook="chat.receive.before_process",
         name="daily60s_message_handler",
@@ -129,9 +187,6 @@ class Daily60sPlugin(MaiBotPlugin):
             return None
 
         command_token = parts[0].lower()
-
-        if getattr(self, "_ctx", None) is not None:
-            self.ctx.logger.info("daily60s 当前配置：%s", cfg.model_dump_json(indent=2))
 
         # 配置层仍然保持"一 API 一配置块"，但运行时只按统一 apis 列表扫描，
         # 这样新增模块时不用改命令路由骨架。

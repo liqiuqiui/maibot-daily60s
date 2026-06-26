@@ -2,6 +2,16 @@
 
 每日定时推送新闻速读、金价等内容到指定 QQ 群组，同时支持关键词命令按需获取。
 
+## 命令说明
+
+- `/menu`、`/help`、`/菜单`、`/帮助`：查看每日速读插件菜单
+- `/60s`、`/daily60s`：获取每日 60 秒新闻
+- `/gold_price`：获取黄金价格
+- `/gas_price <地区>`、`/gas <地区>`：获取指定地区油价
+- `/ai_news [YYYY-MM-DD] [all]`、`/ai [YYYY-MM-DD] [all]`：获取 AI 资讯快报
+- `/today_history [YYYY-MM-DD]`、`/history_today [YYYY-MM-DD]`：获取历史上的今天
+- `/it_news [limit]`、`/it [limit]`：获取实时 IT 资讯
+
 ## 配置说明
 
 编辑 `config.toml`：
