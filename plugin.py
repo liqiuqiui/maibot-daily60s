@@ -22,7 +22,7 @@ def _build_menu_text(cfg: Daily60sPluginConfig) -> str:
     ]
 
     enabled_api_count = 0
-    for api in cfg.apis:
+    for index, api in enumerate(cfg.apis):
         if not api.enabled:
             continue
 
@@ -41,7 +41,7 @@ def _build_menu_text(cfg: Daily60sPluginConfig) -> str:
 
         aliases = keywords[1:]
         alias_text = f"（别名：{'、'.join(aliases)}）" if aliases else ""
-        lines.append(f"- {command}{alias_text}")
+        lines.append(f"{index + 1}. {command}{alias_text}")
 
     if enabled_api_count == 0:
         lines.append("- 当前没有启用的 API 命令")
@@ -133,7 +133,7 @@ class Daily60sPlugin(MaiBotPlugin):
             return False, "每日信息速递未启用", False
 
         await self.ctx.send.text(text=_build_menu_text(cfg), stream_id=stream_id)
-        return True, "菜单已发送", True
+        return True, "菜单已发送", 2
 
     @HookHandler(
         hook="chat.receive.before_process",
