@@ -7,7 +7,7 @@
     "name": "liqiuqiu",
     "url": "https://github.com/liqiuqiui/maibot-daily60s"
   },
-  "license": "GPL-v3.0-or-later",
+  "license": "MIT",
   "urls": {
     "repository": "https://github.com/liqiuqiui/maibot-daily60s",
     "homepage": "https://github.com/liqiuqiui/maibot-daily60s",
@@ -38,5 +38,6 @@
     "locales_path": "_locales",
     "supported_locales": ["zh-CN"]
   },
-  "id": "maibot.daily60s-plugin"
+  "id": "liqiuqiui.daily60s-plugin",
+  "plugin_type": "tool"
 }
