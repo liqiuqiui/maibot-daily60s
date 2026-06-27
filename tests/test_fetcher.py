@@ -2,7 +2,15 @@ import logging
 
 import pytest
 
-import plugins.daily60s.fetcher as fetcher_module
+import plugins.daily60s.core.api_registry as api_registry_module
+import plugins.daily60s.core.fetcher as fetcher_module
+
+
+def test_api_registry_does_not_define_unused_default_config_fields():
+    for definition in api_registry_module.API_REGISTRY.values():
+        assert not hasattr(definition, "default_keywords")
+        assert not hasattr(definition, "default_push_format")
+        assert not hasattr(definition, "default_schedule_push")
 
 
 @pytest.mark.parametrize(
@@ -18,9 +26,9 @@ import plugins.daily60s.fetcher as fetcher_module
     ],
 )
 def test_build_api_request_params(api_name, arg_tokens, expected_params):
-    definition = fetcher_module.API_REGISTRY[api_name]
+    definition = api_registry_module.API_REGISTRY[api_name]
 
-    helper = getattr(fetcher_module, "build_api_request_params", None)
+    helper = getattr(api_registry_module, "build_api_request_params", None)
     assert callable(helper)
     assert helper(definition, arg_tokens) == expected_params
 
@@ -37,16 +45,16 @@ def test_build_api_request_params(api_name, arg_tokens, expected_params):
     ],
 )
 def test_build_api_request_params_invalid(api_name, arg_tokens):
-    definition = fetcher_module.API_REGISTRY[api_name]
-    helper = getattr(fetcher_module, "build_api_request_params", None)
+    definition = api_registry_module.API_REGISTRY[api_name]
+    helper = getattr(api_registry_module, "build_api_request_params", None)
     assert callable(helper)
 
-    with pytest.raises(fetcher_module.CommandUsageError):
+    with pytest.raises(api_registry_module.CommandUsageError):
         helper(definition, arg_tokens)
 
 
 def test_renderers_module_builds_ai_news_html_with_dynamic_count():
-    import plugins.daily60s.renderers as renderers_module
+    import plugins.daily60s.core.renderers as renderers_module
 
     html = renderers_module.build_ai_news_html(
         date_text="2026-06-18",
@@ -159,7 +167,7 @@ def test_renderers_module_builds_ai_news_html_with_dynamic_count():
 )
 async def test_new_api_formatter_supports_text_and_image(api_name, payload, text_needles):
     fetcher = fetcher_module.Fetcher(logger=logging.getLogger("daily60s-test"), timeout=5)
-    definition = fetcher_module.API_REGISTRY[api_name]
+    definition = api_registry_module.API_REGISTRY[api_name]
 
     text_result = await fetcher._format(payload, definition, push_format="text")
     image_result = await fetcher._format(payload, definition, push_format="image")

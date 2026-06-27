@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from plugins.daily60s.delivery import deliver_fetch_result, resolve_fetch_result
-from plugins.daily60s.fetcher import FetchResult
+from plugins.daily60s.core.delivery import deliver_fetch_result, resolve_fetch_result
+from plugins.daily60s.core.fetcher import FetchResult
 
 
 def create_mock_ctx(should_fail: bool = False):
@@ -72,13 +72,14 @@ async def test_deliver_fetch_result_text_to_group():
     ctx = create_mock_ctx()
     result = FetchResult(content="hello group")
 
-    await deliver_fetch_result(
+    delivered = await deliver_fetch_result(
         ctx=ctx,
         target_kind="group",
         target_id="10001",
         result=result,
     )
 
+    assert delivered is True
     # 验证获取了群的 stream_id
     ctx.chat.get_stream_by_group_id.assert_called_once_with("10001")
     # 验证发送了文本
@@ -148,13 +149,14 @@ async def test_deliver_fetch_result_when_stream_not_found():
     ctx = create_mock_ctx(should_fail=True)
     result = FetchResult(content="hello")
 
-    await deliver_fetch_result(
+    delivered = await deliver_fetch_result(
         ctx=ctx,
         target_kind="group",
         target_id="10001",
         result=result,
     )
 
+    assert delivered is False
     # 验证记录了警告
     ctx.logger.warning.assert_called_once()
     # 验证没有发送消息
@@ -169,7 +171,7 @@ async def test_deliver_fetch_result_html_to_group():
     result = FetchResult(content="", html="<p>hello</p>")
     render_fn = AsyncMock(return_value="rendered_base64")
 
-    await deliver_fetch_result(
+    delivered = await deliver_fetch_result(
         ctx=ctx,
         target_kind="group",
         target_id="10001",
@@ -177,6 +179,7 @@ async def test_deliver_fetch_result_html_to_group():
         render_fn=render_fn,
     )
 
+    assert delivered is True
     # 验证调用了渲染函数
     render_fn.assert_called_once_with("<p>hello</p>")
     # 验证获取了群的 stream_id
